@@ -9,8 +9,13 @@ from ..schema import ChapterSummary
 
 
 def summarize_chapter(llm: LLM, book_title: str, chapter: dict,
-                      model: str | None = None) -> ChapterSummary:
-    """对单章产出结构化精读笔记。"""
+                      model: str | None = None,
+                      figures_block: str = "") -> ChapterSummary:
+    """对单章产出结构化精读笔记。
+
+    figures_block：本章插图的视觉模型转述（M8）。
+    单独成块并标注「非原文」，避免模型把它当原文引用 → 破坏忠实性护栏。
+    """
     text = chapter.get("text", "")
     if not text.strip():
         # 空章节也要返回合法对象（core_thesis 在 schema 里是必填）
@@ -21,6 +26,8 @@ def summarize_chapter(llm: LLM, book_title: str, chapter: dict,
         chapter_title=chapter["title"],
         chapter_text=text,
     )
+    if figures_block:
+        user = user + "\n\n" + figures_block
     return llm.structured(
         system=CHAPTER_SUMMARY_SYSTEM,
         user=user,

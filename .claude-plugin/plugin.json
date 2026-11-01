@@ -1,0 +1,12 @@
+{
+  "name": "reading-agent",
+  "description": "把微信读书网页版整本书采集下来，做分页 OCR、插图识别，产出逐章精读笔记与全书五维评测报告",
+  "version": "0.1.0",
+  "author": {
+    "name": "sukunwei",
+    "url": "https://github.com/sukunwei/reading-agent"
+  },
+  "homepage": "https://github.com/sukunwei/reading-agent",
+  "repository": "https://github.com/sukunwei/reading-agent",
+  "keywords": ["reading", "book", "ocr", "weread", "summary", "chinese"]
+}

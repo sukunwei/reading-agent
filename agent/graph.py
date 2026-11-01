@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from .llm import LLM
+from .figures import process_book_figures
 from .nodes.diagnose import diagnose_and_recover, render_diagnosis_md
 from .nodes.review import render_review_md, review_book
 from .nodes.split import load_book_context
@@ -36,10 +37,33 @@ class BookState(TypedDict, total=False):
     needs_review: list[int]      # 待人工复核的章节 index
     gate_passed: bool
     diagnosis: dict | None        # 诊断 / 恢复报告
+    figures: list[dict]           # 插图记录（含视觉描述）
+    figure_stats: dict
     outputs: dict[str, str]
 
 
 # --------------------------------------------------------------------------- 节点
+
+def node_figures(state: BookState) -> BookState:
+    """插图分流（M8）：检测图表 → 视觉模型读图 → 记录到 figures.json。
+
+    必须在 load 之前 —— load 装配章节正文时会把插图块内联到对应位置。
+    """
+    book_dir = Path(state["book_dir"])
+    state_dir = Path(state["state_dir"])
+    if not (book_dir / "screenshots").exists():
+        state["figures"] = []
+        return state
+
+    llm = LLM()
+    res = process_book_figures(
+        llm, book_dir, state_dir, describe=True,
+        on_progress=lambda rec, st: print(
+            f"  📊 {str(rec.get('caption_no')):8s} {str(rec.get('caption'))[:24]:26s} {rec.get('verdict')}"))
+    state["figures"] = res.get("figures", [])
+    state["figure_stats"] = res.get("stats", {})
+    return state
+
 
 def node_load(state: BookState) -> BookState:
     book_dir = Path(state["book_dir"])
@@ -231,6 +255,7 @@ def build_graph(checkpointer=None):
     from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(BookState)
+    g.add_node("figures", node_figures)
     g.add_node("load", node_load)
     g.add_node("summarize", node_summarize)
     g.add_node("diagnose", node_diagnose)
@@ -238,7 +263,8 @@ def build_graph(checkpointer=None):
     g.add_node("review", node_review)
     g.add_node("render", node_render)
 
-    g.add_edge(START, "load")
+    g.add_edge(START, "figures")
+    g.add_edge("figures", "load")
     g.add_edge("load", "summarize")
     g.add_edge("summarize", "diagnose")
     g.add_edge("diagnose", "gate")

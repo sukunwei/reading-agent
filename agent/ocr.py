@@ -26,6 +26,8 @@ P1 —— 分页 OCR + 质量闸门
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import shutil
@@ -38,6 +40,8 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
+# 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
+DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
 OCR_SRC = ROOT / "ocr.swift"
 BIN_DIR = ROOT / "bin"
 OCR_BIN = BIN_DIR / "ocr"
@@ -135,7 +139,7 @@ def process_book(book_dir: Path, state_dir: Path, binary: Path,
                 continue
 
             # 2) 识别
-            r = subprocess.run([str(binary), str(tmpdir)],
+            r = subprocess.run([str(binary), str(tmpdir), "--bbox"],
                                capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"  ❌ OCR 失败:\n{r.stdout[-1500:]}\n{r.stderr[-800:]}")
@@ -177,11 +181,39 @@ def process_book(book_dir: Path, state_dir: Path, binary: Path,
                 parts = per_page.get(p["page_no"])
                 if not parts:
                     continue
-                out_txt = ocr_root / Path(p["img"]).relative_to("screenshots").with_suffix(".txt")
+                rel_txt = Path(p["img"]).relative_to("screenshots").with_suffix(".txt")
+                out_txt = ocr_root / rel_txt
                 out_txt.parent.mkdir(parents=True, exist_ok=True)
                 # 栏间补一个换行，避免两栏最后一行与下一栏第一行黏成一句
                 out_txt.write_text("\n".join(x.strip("\n") for x in parts if x.strip()) + "\n",
                                    "utf-8")
+                # 行级 bbox（M8 剔除坐标轴噪声 / 图表定位用）：合并两栏的行。
+                # ⚠️ 坐标空间要对齐：OCR 跑在**裁栏图**上，bbox 是栏内归一化坐标；
+                #    这里换算成**整页像素坐标**（x 加栏偏移、y 乘裁剪高），
+                #    否则图表框（整页坐标）和行 bbox（栏内坐标）对不上。
+                line_rows = []
+                bottom = int(p.get("pager_top") or 0) or 0
+                for k in range(len(parts)):
+                    lj = tmpdir / f"{p['page_no']:04d}.col{k}.lines.json"
+                    if not lj.exists():
+                        continue
+                    try:
+                        rows_k = json.loads(lj.read_text("utf-8"))
+                    except Exception:
+                        continue
+                    ck = cols[k] if k < len(cols) else [0, 0]
+                    cx0, cx1 = int(ck[0]), int(ck[1])
+                    cw = max(1, cx1 - cx0)
+                    for r in rows_k:
+                        r["x0"] = round(float(r.get("x0", 0)) * cw + cx0, 1)
+                        r["x1"] = round(float(r.get("x1", 0)) * cw + cx0, 1)
+                        if bottom:
+                            r["y"] = round(float(r.get("y", 0)) * bottom, 1)
+                        r["col"] = k
+                    line_rows.extend(rows_k)
+                if line_rows:
+                    (ocr_root / rel_txt.with_suffix(".lines.json")).write_text(
+                        json.dumps(line_rows, ensure_ascii=False), "utf-8")
             done += len(chunk)
             el = __import__("time").time() - t0
             print(f"  ▸ {done}/{len(todo)} 页  [{el:.0f}s, {el/max(1,done):.1f}s/页]")
@@ -238,8 +270,8 @@ def main() -> int:
 
     binary = build_ocr_binary(force=args.rebuild)
 
-    out_root = ROOT / "output"
-    state_root = ROOT / "state"
+    out_root = DATA_HOME / "output"
+    state_root = DATA_HOME / "state"
     books = sorted([d for d in out_root.iterdir() if d.is_dir()]) if out_root.exists() else []
     if args.book:
         books = [b for b in books if args.book in b.name]

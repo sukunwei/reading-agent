@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
+DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
 sys.path.insert(0, str(ROOT))
 
 from agent.llm import LLM, load_dotenv                 # noqa: E402
@@ -38,7 +40,7 @@ STAGES = ("ocr", "split", "summary", "review", "render", "all")
 
 
 def list_books() -> list[Path]:
-    out = ROOT / "output"
+    out = DATA_HOME / "output"
     if not out.exists():
         return []
     return sorted(d for d in out.iterdir() if d.is_dir())
@@ -106,20 +108,23 @@ def run_graph(book_dir: Path, state_dir: Path, llm: LLM, resume: bool) -> int:
     from langgraph.graph import StateGraph
     from langgraph.types import Command
 
-    from agent.graph import (BookState, make_checkpointer, node_diagnose, node_gate,
-                             node_load, node_render, node_review, node_summarize)
+    from agent.graph import (BookState, make_checkpointer, node_diagnose,
+                             node_figures, node_gate, node_load, node_render,
+                             node_review, node_summarize)
 
-    db = ROOT / "state" / f"{book_dir.name}.ckpt.sqlite"
+    db = DATA_HOME / "state" / f"{book_dir.name}.ckpt.sqlite"
     saver = make_checkpointer(db)
 
     g = StateGraph(BookState)
+    g.add_node("figures", node_figures)
     g.add_node("load", node_load)
     g.add_node("summarize", node_summarize)
     g.add_node("diagnose", node_diagnose)
     g.add_node("gate", node_gate)
     g.add_node("review", node_review)
     g.add_node("render", node_render)
-    g.add_edge("__start__", "load")
+    g.add_edge("__start__", "figures")
+    g.add_edge("figures", "load")
     g.add_edge("load", "summarize")
     g.add_edge("summarize", "diagnose")
     g.add_edge("diagnose", "gate")
@@ -190,7 +195,7 @@ def main() -> int:
             return 1
         print("已采集的书：")
         for b in books:
-            pf = ROOT / "state" / b.name / "pages.jsonl"
+            pf = DATA_HOME / "state" / b.name / "pages.jsonl"
             n = sum(1 for _ in pf.open(encoding="utf-8")) if pf.exists() else 0
             print(f"  · {b.name}  ({n} 页)")
         return 0
@@ -199,7 +204,7 @@ def main() -> int:
     if not book_dir:
         print(f"❌ 找不到包含「{args.book}」的书。用 --list 看看有哪些。")
         return 1
-    state_dir = ROOT / "state" / book_dir.name
+    state_dir = DATA_HOME / "state" / book_dir.name
 
     if args.mock:
         os.environ["MOCK"] = "1"

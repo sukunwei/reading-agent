@@ -43,6 +43,8 @@
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import asyncio
 import hashlib
@@ -54,6 +56,8 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
+# 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
+DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
 
 DEFAULT_BOOK_URL = ("https://weread.qq.com/web/reader/"
                     "95332ad0813ab8705g016ce7kc81322c012c81e728d9d180")
@@ -286,8 +290,8 @@ async def run(args) -> int:
           const t = document.querySelector('.readerTopBar_title, .readerTopBar_title_text');
           return (document.title.split(' - ')[0] || (t ? t.innerText.trim() : '') || '未命名').trim();
         }""")
-        out_dir = ROOT / "output" / book_title
-        state_dir = ROOT / "state" / book_title
+        out_dir = DATA_HOME / "output" / book_title
+        state_dir = DATA_HOME / "state" / book_title
         shots_dir = out_dir / "screenshots"
         shots_dir.mkdir(parents=True, exist_ok=True)
         state_dir.mkdir(parents=True, exist_ok=True)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..figures import inject_into_page
 from .clean import clean_pages, strip_noise
 
 
@@ -89,15 +90,41 @@ def build_chapters(toc: list[dict], pages: list[dict]) -> list[dict]:
     return chapters
 
 
-def chapter_texts(book_dir: Path, chapters: list[dict], pages: list[dict]) -> list[dict]:
-    """给每个章节填入正文（按页码顺序拼接 OCR 文本）。"""
+def chapter_texts(book_dir: Path, chapters: list[dict], pages: list[dict],
+                  figures: list[dict] | None = None) -> list[dict]:
+    """给每个章节填入正文（按页码顺序拼接 OCR 文本）。
+
+    插图分流（M8）：OCR 文本里坐标轴刻度是噪声、图表数据又拿不到 →
+    这里按 figures.json 把插图块**内联到正文对应位置**（替换图注行），
+    同时剔除落在图表 bbox 内的噪声行。
+    """
     ocr_root = book_dir / "ocr_pages"
+    figs_by_page: dict[int, list[dict]] = {}
+    for f in figures or []:
+        figs_by_page.setdefault(f.get("page_no", -1), []).append(f)
+
     by_page: dict[int, str] = {}
     for p in pages:
+        no = p.get("page_no", 0)
         rel = Path(p["img"]).relative_to("screenshots").with_suffix(".txt")
         f = ocr_root / rel
-        if f.exists():
-            by_page[p.get("page_no", 0)] = f.read_text("utf-8")
+        if not f.exists():
+            continue
+        text = f.read_text("utf-8")
+        page_figs = figs_by_page.get(no)
+        if page_figs:
+            lj = ocr_root / rel.with_suffix(".lines.json")
+            lines_json = []
+            if lj.exists():
+                try:
+                    lines_json = json.loads(lj.read_text("utf-8"))
+                except Exception:
+                    lines_json = []
+            # ⚠️ 不写回 OCR 文件 —— OCR 原文要保持纯净：
+            #    写回会把图注行替换掉，下次重跑时「图注模式」信号就消失了。
+            #    注入后的正文落在 chapter_summaries.md / full_text.txt 里。
+            text, _ = inject_into_page(text, lines_json, page_figs)
+        by_page[no] = text
 
     for ch in chapters:
         texts = [by_page[n] for n in range(ch["start_page"], ch["end_page"] + 1)
@@ -109,12 +136,16 @@ def chapter_texts(book_dir: Path, chapters: list[dict], pages: list[dict]) -> li
 
 
 def load_book_context(book_dir: Path, state_dir: Path) -> tuple[list[dict], list[dict], dict]:
-    """读 toc.json + pages.jsonl + 质量报告。"""
+    """读 toc.json + pages.jsonl + 插图记录 + 质量报告。"""
     toc_path = book_dir / "toc.json"
     toc = json.loads(toc_path.read_text("utf-8")) if toc_path.exists() else []
     pages = read_jsonl(state_dir / "pages.jsonl")
     chapters = build_chapters(toc, pages)
-    chapters = chapter_texts(book_dir, chapters, pages)
+
+    fp = book_dir / "figures" / "figures.json"
+    figures = json.loads(fp.read_text("utf-8")) if fp.exists() else []
+    chapters = chapter_texts(book_dir, chapters, pages, figures)
+
     qp = book_dir / "quality_report.json"
     quality = json.loads(qp.read_text("utf-8")) if qp.exists() else {}
     return chapters, pages, quality

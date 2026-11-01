@@ -22,6 +22,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -117,6 +118,9 @@ class LLM:
         # prompt = 提示词要求 JSON + 本地 pydantic 校验（端点不支持强制输出时用）
         # auto  = 先试 native，失败自动降级
         self.structured_mode = os.environ.get("LLM_STRUCTURED_OUTPUT", "auto").lower()
+        # 原生结构化输出失败一次后就不再试 —— 该端点本就不强制 JSON，
+        # 每次重试都白等一次（实测挂起可达数分钟）。
+        self._native_disabled = False
         self._client = client
         self.usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         self.last_stop_reason: str | None = None
@@ -159,18 +163,100 @@ class LLM:
         if self.mock:
             return self._mock_structured(schema)
 
-        if self.structured_mode in ("native", "auto"):
+        if self.structured_mode in ("native", "auto") and not self._native_disabled:
             try:
                 return self._structured_native(system, user, schema, model, max_tokens, effort)
             except Exception as e:  # noqa: BLE001
                 if self.structured_mode == "native":
                     raise
+                self._native_disabled = True
                 global _FALLBACK_WARNED
                 if not _FALLBACK_WARNED:
                     _FALLBACK_WARNED = True
                     print(f"  ⚠️ 原生结构化输出不可用（{type(e).__name__}），"
                           f"降级为提示词 JSON 模式（仅提示一次）")
         return self._structured_prompt(system, user, schema, model, max_tokens, effort)
+
+    def structured_vision(self, system: str, user: str, image_path: Path | str,
+                          image_b64: str | None, schema: type[T],
+                          model: str | None = None, max_tokens: int = 8000,
+                          effort: str | None = None) -> T:
+        """多模态 + 结构化输出。
+
+        ⚠️ 实测：MiniMax 的 Anthropic 兼容端点**接受** output_config.format
+        但不强制 JSON → 走提示词 JSON + 本地校验的降级路径。
+        """
+        if self.mock:
+            return self._mock_structured(schema)
+
+        import base64 as _b64
+        if image_b64 is None:
+            image_b64 = _b64.standard_b64encode(Path(image_path).read_bytes()).decode()
+
+        model = model or self.model
+        effort = effort or self.effort
+        content: list[Any] = [
+            {"type": "image",
+             "source": {"type": "base64", "media_type": "image/png", "data": image_b64}},
+            {"type": "text", "text": user},
+        ]
+
+        if self.structured_mode in ("native", "auto") and not self._native_disabled:
+            try:
+                with self.client.messages.stream(
+                    model=model, max_tokens=max_tokens, system=system,
+                    thinking={"type": "adaptive"},
+                    output_config={"effort": effort},
+                    output_format=schema,
+                    messages=[{"role": "user", "content": content}],
+                ) as stream:
+                    msg = stream.get_final_message()
+                self._record(msg.usage)
+                if msg.parsed is not None:
+                    return msg.parsed
+                raise LLMCallError("未返回结构化结果",
+                                   category="schema_invalid", retryable=True)
+            except Exception as e:  # noqa: BLE001
+                if self.structured_mode == "native":
+                    raise
+                self._native_disabled = True
+                global _FALLBACK_WARNED
+                if not _FALLBACK_WARNED:
+                    _FALLBACK_WARNED = True
+                    print("  ⚠️ 原生结构化输出不可用，降级为提示词 JSON 模式（仅提示一次）")
+        return self._structured_prompt_vision(system, user, content, schema, model, max_tokens, effort)
+
+    def _structured_prompt_vision(self, system: str, user: str, content: list[Any],
+                                  schema: type[T], model: str, max_tokens: int,
+                                  effort: str) -> T:
+        schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
+        sys_p = (system + "\n\n【输出格式】只输出一个 JSON 对象，不要任何解释文字或 Markdown 代码块。\n"
+                 + "JSON 必须严格符合以下 JSON Schema：\n" + schema_json)
+        msgs: list[dict[str, Any]] = [{"role": "user", "content": content}]
+        last = ""
+        for attempt in range(3):
+            try:
+                with self.client.messages.stream(
+                    model=model, max_tokens=max_tokens, system=sys_p,
+                    thinking={"type": "adaptive"},
+                    output_config={"effort": effort},
+                    messages=msgs,
+                ) as stream:
+                    msg = stream.get_final_message()
+                self._record(msg.usage)
+                raw = "".join(b.text for b in msg.content if b.type == "text")
+                return schema.model_validate(_extract_json(raw))
+            except (ValidationError, ValueError) as e:
+                last = str(e)[:500]
+                msgs.append({"role": "assistant", "content": raw if "raw" in dir() else ""})
+                msgs.append({"role": "user",
+                             "content": f"上一次输出不符合 schema：\n{last}\n请只输出修正后的 JSON。"})
+            except Exception as e:  # noqa: BLE001
+                if not self._is_retryable(e):
+                    raise
+                time.sleep(min(20, 2 ** attempt * 3))
+        raise LLMCallError(f"多模态结构化输出失败：{last}",
+                           category="schema_invalid", retryable=True)
 
     def _structured_native(self, system: str, user: str, schema: type[T],
                           model: str | None, max_tokens: int,

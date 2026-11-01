@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "reading-agent",
+  "description": "微信读书整本书采集 → OCR → 逐章精读笔记 + 全书五维评测",
+  "owner": {
+    "name": "sukunwei",
+    "url": "https://github.com/sukunwei/reading-agent"
+  },
+  "plugins": [
+    {
+      "name": "reading-agent",
+      "description": "把微信读书网页版整本书采集下来，做分页 OCR、插图识别，产出逐章精读笔记与全书五维评测报告",
+      "source": "./",
+      "category": "productivity",
+      "keywords": ["reading", "book", "ocr", "weread", "summary"]
+    }
+  ]
+}

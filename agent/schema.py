@@ -38,6 +38,23 @@ class ChapterSummary(BaseModel):
         description="待验证疑问：原文没有回答、或值得进一步查证的问题")
 
 
+# --------------------------------------------------------------------- 插图
+
+
+class FigureDescription(BaseModel):
+    """单张插图的视觉模型转述（M8 插图分流）。"""
+
+    type: str = Field(
+        default="", description="图表类型：柱状图/折线图/饼图/表格/地图/照片/示意图/流程图/其他")
+    title: str = Field(default="", description="图表标题")
+    axes: dict[str, str] = Field(
+        default_factory=dict, description="坐标轴说明：x 轴、y 轴分别是什么、范围与单位")
+    key_data: list[str] = Field(
+        default_factory=list, description="图上能读到的关键数据点或趋势，每条一句话")
+    insight: str = Field(default="", description="一句话说明这张图想说明什么")
+    source: str = Field(default="", description="数据来源（图注里给了就照抄）")
+
+
 # --------------------------------------------------------------------- 全书评测
 
 class ScoreDetail(BaseModel):
