@@ -166,6 +166,22 @@ JS_READY = """() => {
   return bad;
 }"""
 
+# weread 偶发整屏渲染失败：页面中央显示「加载失败，请 点击重试」。
+# 该状态下 canvas 内容恒定，会被「连续内容不变」误判成书尾而提前停止。
+JS_LOAD_ERROR = """() => {
+  const b = document.body;
+  if (!b) return false;
+  return (b.innerText || '').includes('加载失败');
+}"""
+
+JS_CLICK_RETRY = """() => {
+  let n = 0;
+  document.querySelectorAll('*').forEach(e => {
+    if (e.children.length === 0 && (e.innerText || '').trim() === '点击重试') { e.click(); n++; }
+  });
+  return n;
+}"""
+
 JS_TOC = """() => [...document.querySelectorAll('.readerCatalog_list_item')].map((e, i) => {
   const inner = e.querySelector('.readerCatalog_list_item_inner');
   const m = (inner ? inner.className : '').match(/level_(\\d+)/);
@@ -228,6 +244,71 @@ async def flip_next(page) -> bool:
     }""")
 
 
+async def jump_to_toc(page, title: str, wait_ms: int = 5000) -> bool:
+    """点目录里的指定条目跳转。
+
+    ⚠️ 必须用「真实点击」（Playwright click），不能用 JS 的 el.click()：
+    阅读器把目录条目的跳转挂在真实指针事件上，脚本派发的 click 不会生效
+    （实测 el.click() 点了也不跳，而真实点击能跳）。
+    """
+    # 目录面板必须是打开且可见的
+    opened = await page.evaluate("""() => {
+      const p = document.querySelector('.readerCatalog');
+      if (!p) return false;
+      const r = p.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    }""")
+    if not opened:
+        with contextlib.suppress(Exception):
+            await page.click("button.readerControls_item.catalog", timeout=10000)
+        await page.wait_for_timeout(1500)
+
+    idx = await page.evaluate("""(t) => {
+      const els = [...document.querySelectorAll('.readerCatalog_list_item')];
+      return els.findIndex(e => (e.innerText || '').trim() === t);
+    }""", title)
+    if idx < 0:
+        print(f"  ⚠️ 目录里找不到条目「{title}」")
+        return False
+    try:
+        loc = page.locator(".readerCatalog_list_item").nth(idx)
+        await loc.scroll_into_view_if_needed(timeout=8000)
+        await loc.click(timeout=10000)
+    except Exception as e:
+        print(f"  ⚠️ 目录跳转「{title}」失败：{str(e)[:120]}")
+        return False
+    await page.wait_for_timeout(wait_ms)
+    return True
+
+
+async def read_chapter_title(page) -> str | None:
+    return await page.evaluate("""() => {
+      const t = document.querySelector('.renderTargetPageInfo_header_chapterTitle');
+      return t ? (t.innerText || '').trim() || null : null;
+    }""")
+
+
+async def recover_load_error(page, attempts: int = 4, wait_ms: int = 12000) -> bool:
+    """整屏渲染失败（页面显示「加载失败，请 点击重试」）时点重试恢复。
+
+    返回 True 表示已恢复（页面可正常截图）；False 表示多次重试仍失败。
+    """
+    for attempt in range(1, attempts + 1):
+        if not await page.evaluate(JS_LOAD_ERROR):
+            return True
+        clicked = await page.evaluate(JS_CLICK_RETRY)
+        if not clicked:
+            # 没有重试按钮：等一会儿看阅读器是否自愈
+            await page.wait_for_timeout(3000)
+            continue
+        print(f"  ♻️ 渲染失败页「第 {attempt} 次」点「点击重试」…")
+        await page.wait_for_timeout(wait_ms)
+        if not await page.evaluate(JS_LOAD_ERROR):
+            print("  ♻️ 已恢复渲染 ✅")
+            return True
+    return not await page.evaluate(JS_LOAD_ERROR)
+
+
 # --------------------------------------------------------------------------- 主流程
 
 async def run(args) -> int:
@@ -276,12 +357,6 @@ async def run(args) -> int:
             await browser.close()
             return 3
 
-        # 隐藏 chrome（目录面板点按钮关不掉，只能 CSS 隐藏）
-        await page.add_style_tag(content="""
-            .readerCatalog, .readerCatalog_list, .wr_mask { display: none !important; }
-        """)
-        await page.wait_for_timeout(800)
-
         book_title = await page.evaluate("""() => {
           const t = document.querySelector('.readerTopBar_title, .readerTopBar_title_text');
           return (document.title.split(' - ')[0] || (t ? t.innerText.trim() : '') || '未命名').trim();
@@ -301,6 +376,31 @@ async def run(args) -> int:
         toc = await page.evaluate(JS_TOC)
         (out_dir / "toc.json").write_text(json.dumps(toc, ensure_ascii=False, indent=2), "utf-8")
         print(f"  {len(toc)} 个条目 → toc.json")
+
+        # ---- 定位起点 ----
+        # 阅读器会恢复「上次读到哪」，不显式跳转就可能从半本书中间开始采
+        # （实测续跑时直接从 2.3 开始，导致 1.3/1.4/2.1/2.2 整段缺失）。
+        # 默认跳到目录首项；--start-at 可指定从某个章节开始（补采用）。
+        # ⚠️ 必须在目录面板「真实打开」时用真实点击跳转（见 jump_to_toc）。
+        start_title = args.start_at or (toc[0]["title"] if toc else None)
+        if start_title:
+            jumped = False
+            for attempt in range(3):
+                jumped = await jump_to_toc(page, start_title)
+                if jumped:
+                    await page.wait_for_timeout(1500)
+                    print(f"  起点「{start_title}」→ 当前章节 {await read_chapter_title(page)!r}")
+                    break
+                await page.wait_for_timeout(2000)
+            if not jumped:
+                print(f"  ⚠️ 没能跳到目录条目「{start_title}」，按当前位置继续")
+
+        # 隐藏 chrome（目录面板点按钮关不掉，只能 CSS 隐藏）
+        # —— 放在跳转之后：跳转需要目录面板可见、元素可点
+        await page.add_style_tag(content="""
+            .readerCatalog, .readerCatalog_list, .wr_mask { display: none !important; }
+        """)
+        await page.wait_for_timeout(800)
 
         l1_chapters = [t for t in toc if t["level"] == 1]
 
@@ -340,26 +440,20 @@ async def run(args) -> int:
         pages_path = state_dir / "pages.jsonl"
         existing = read_jsonl(pages_path)
         seen_hashes = {p["sha1"] for p in existing}
+        # 内容指纹（canvas），用于续跑时定位断点；老记录没有这个字段时退化为「从头重走」
+        seen_sigs = {p["sig"] for p in existing if p.get("sig")}
         page_no = existing[-1]["page_no"] if existing else 0
         print(f"  已有 {len(existing)} 页记录{'（续跑模式）' if args.resume else ''}")
 
-        # ---- 续跑定位：回到目录首项重走，已采页按 sha1 跳过 ----
+        # ---- 续跑定位：从起点往后翻，直到遇到没采过的内容指纹 ----
+        # 判定「这一屏是不是新的」要用 canvas 内容指纹（JS_CONTENT_SIG），
+        # 不能拿截图的 sha1 去比 —— 两者根本不是一个东西，会导致第一轮就误判成断点。
         if args.resume and existing:
             print("\n▶ 续跑定位…")
-            with contextlib.suppress(Exception):
-                await page.click("button.readerControls_item.catalog", timeout=10000)
-            await page.wait_for_timeout(1200)
-            await page.evaluate("""() => {
-              const el = document.querySelectorAll('.readerCatalog_list_item')[0];
-              if (el) { el.scrollIntoViewIfNeeded(); el.click(); }
-            }""")
-            await page.wait_for_timeout(3000)
             flips = 0
             while flips < 3000:
-                sigs = await page.evaluate("""() => [...document.querySelectorAll('canvas')].map(c => {
-                  try { return c.toDataURL('image/png'); } catch (e) { return null; }
-                }).filter(Boolean).map(u => u.length + ':' + u.slice(-40))""")
-                if sigs and any(s not in seen_hashes for s in sigs):
+                sig = await page.evaluate(JS_CONTENT_SIG)
+                if sig and sig not in seen_sigs:
                     print(f"  已定位到断点（重走 {flips} 次翻页）")
                     break
                 if not await flip_next(page):
@@ -384,6 +478,16 @@ async def run(args) -> int:
                 print(f"  ⚠️ reader 未就绪: {', '.join(bad)}")
             await wait_stable(page)
 
+            # 整屏渲染失败要先恢复，否则会截到一张空白错误页，
+            # 而且 canvas 内容恒定 → 被判成「连续内容不变」→ 误当成书尾停下。
+            if await page.evaluate(JS_LOAD_ERROR):
+                if not await recover_load_error(page):
+                    print("  ⛔ 渲染失败且重试无效，停止")
+                    break
+                await wait_stable(page)
+                prev_sig = None  # 恢复后内容变了，重新判定
+                continue
+
             geo = await page.evaluate(JS_GEOMETRY)
             if not geo["canvases"]:
                 print("  ✗ 没有 canvas，停止")
@@ -391,6 +495,14 @@ async def run(args) -> int:
 
             sig = await page.evaluate(JS_CONTENT_SIG)
             if prev_sig and sig == prev_sig:
+                # 内容没变有两种可能：① 到书尾了 ② 阅读器还在加载下一屏。
+                # ②更常见（翻页比渲染快），所以先多等一会儿再判定，别急着当书尾。
+                await page.wait_for_timeout(3000)
+                sig2 = await page.evaluate(JS_CONTENT_SIG)
+                if sig2 != prev_sig:
+                    prev_sig = sig2
+                    stuck = 0
+                    continue
                 stuck += 1
                 if stuck >= args.max_stuck:
                     print("  ⛔ 连续内容不变（书尾或翻页失效），停止")
@@ -443,6 +555,7 @@ async def run(args) -> int:
                     "page_no": no, "chapter_title": title, "chapter_index": current_index,
                     "chapter_l1": l1["title"] if l1 else None,
                     "screen_index": screen_idx, "sha1": h, "img": rel_img,
+                    "sig": sig,
                     "columns": columns, "pager_top": pager_top, "clip": clip,
                 })
                 page_no = no
@@ -473,6 +586,8 @@ def main() -> int:
     ap.add_argument("--state", default=None,
                     help="登录态文件（默认 <auth-dir>/storage_state.json）")
     ap.add_argument("--max-pages", type=int, default=100000)
+    ap.add_argument("--start-at", default=None,
+                    help="从目录里这个条目开始采（默认目录首项）；补采某章时用")
     ap.add_argument("--max-stuck", type=int, default=4)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--out-dir", default=None,
