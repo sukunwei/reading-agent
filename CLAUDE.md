@@ -182,7 +182,7 @@ agent/               认知层（LangGraph）
 shared/              两层共用（不依赖任何一层）
   paths.py                 路径解析（产物/登录态目录由用户指定）
   stages.py                阶段计时 + token 台账
-ocr.swift            OCR 引擎（macOS Vision）
+utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，被 Python 用 subprocess 调
 ```
 
 **依赖方向**：`capture/` 和 `agent/` 是**平级的两层**，都只依赖 `shared/`。

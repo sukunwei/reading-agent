@@ -12,6 +12,7 @@ storage_state.json
 # 采集产物（路径由用户指定，默认 ./reading-output）
 reading-output/
 output/
+utils/bin/
 bin/
 
 # 登录态（默认 ~/.reading-agent）

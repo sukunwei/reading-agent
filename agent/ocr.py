@@ -44,8 +44,8 @@ import contextlib
 from shared.paths import book_paths, list_books, resolve_out_dir
 from shared.stages import record_stage
 
-OCR_SRC = ROOT / "ocr.swift"
-BIN_DIR = ROOT / "bin"
+OCR_SRC = ROOT / "utils" / "ocr.swift"
+BIN_DIR = ROOT / "utils" / "bin"
 OCR_BIN = BIN_DIR / "ocr"
 
 

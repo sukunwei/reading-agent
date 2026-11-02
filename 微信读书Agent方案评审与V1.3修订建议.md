@@ -314,7 +314,7 @@ V1.1「取消全局 full_ocr.txt，全文由程序动态拼接」是**反作用*
 
 ### 3.5 OCR（`ocr.swift`）
 
-> ✅ **已在本项目内优化完成** → `weread-study-agent/ocr.swift`（12 项改动，见 §6.5）。
+> ✅ **已在本项目内优化完成** → `weread-study-agent/utils/ocr.swift`（12 项改动，见 §6.5）。
 > 下表是原版 `../weread-screenshot/ocr.swift` 中值得保留的机制。
 
 | 实现 | 位置 | 为什么重要 |

@@ -2,7 +2,7 @@
 
 输入一个微信读书 reader URL，输出：**逐页截图 → 分页 OCR → 插图识别 → 逐章精读笔记 → 全书五维评测报告**。
 
-> 全 Python 实现。OCR 用 macOS Vision（`ocr.swift`，编译成独立二进制被 Python 调用）。
+> 全 Python 实现。OCR 用 macOS Vision（`utils/ocr.swift`，编译成独立二进制被 Python 调用）。
 > 也可作为 **Claude Code 插件**安装（见 [安装](#安装)）。
 
 ---
@@ -159,7 +159,7 @@ flowchart LR
 git clone https://github.com/sukunwei/reading-agent.git
 cd reading-agent
 pip install -r requirements.txt
-swiftc -O ocr.swift -o bin/ocr
+swiftc -O utils/ocr.swift -o utils/bin/ocr
 ```
 
 在 Claude Code 里用 `--plugin-dir` 加载：
@@ -174,7 +174,7 @@ claude --plugin-dir /path/to/reading-agent
 git clone https://github.com/sukunwei/reading-agent.git && cd reading-agent
 
 pip install -r requirements.txt
-swiftc -O ocr.swift -o bin/ocr          # OCR 引擎（macOS Vision）
+swiftc -O utils/ocr.swift -o utils/bin/ocr   # OCR 引擎（macOS Vision）
 cp .env.example .env && $EDITOR .env     # 填 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
 ```
 
@@ -259,7 +259,7 @@ CLAUDE.md            项目操作记忆（硬约束 / 角色定义 / 排查表�
 capture/             采集层（Playwright）
 agent/               认知层（LangGraph）+ report.py
 shared/              两层共用：paths.py（路径解析）+ stages.py（计时/token 台账）
-ocr.swift            OCR 引擎（macOS Vision）
+utils/               非 Python 的工具：ocr.swift（OCR 引擎，macOS Vision）+ bin/ 编译产物
 ```
 
 ---

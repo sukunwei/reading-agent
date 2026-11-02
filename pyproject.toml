@@ -23,7 +23,7 @@ exclude = [
     ".venv",
     "__pycache__",
     "reading-output",
-    "bin",
+    "utils/bin",
 ]
 
 [tool.ruff.lint]
