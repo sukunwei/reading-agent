@@ -270,6 +270,8 @@ output/<书名>/
 | 采集层不进 LangGraph | 采集是长时确定性任务，不该进 checkpoint 图；LangGraph 只管认知层 |
 | 结构化输出带降级路径 | 部分 Anthropic 兼容端点接受 `output_config.format` 但不强制 → native 失败自动降级为「提示词 JSON + 本地校验 + 修复重试」 |
 | 默认模型不写死 | 走第三方端点时 `claude-opus-5-5` 会 404 → `LLM_MODEL` → `ANTHROPIC_MODEL` → 官方默认 |
+| 逐章总结默认 **2 个 worker 并行** | 实测 8 章：串行 34.0s/章 vs 并行 14.1s/章（**2.4×**）。`LLM_WORKERS` 可调。⚠️ 并行前必须先 `warmup()` 探测原生结构化输出，否则多个 worker 会一起卡在那个会挂起的原生路径上 |
+| 插图识别走**批量**（6 图/批） | 实测单图 38s/张 vs 批量 2.6s/张（**14×**）。整本 102 张图：65 分钟 → 5 分钟 |
 
 ---
 

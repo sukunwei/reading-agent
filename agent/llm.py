@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, TypeVar
@@ -123,11 +124,17 @@ class LLM:
         self._native_disabled = False
         self._client = client
         self.usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        # 并行调用（多 worker 跑各章）时保护共享状态
+        self._lock = threading.Lock()
         self.last_stop_reason: str | None = None
 
     # ---------------------------------------------------------------- client
     @property
     def client(self):
+        with self._lock:
+            return self._get_client()
+
+    def _get_client(self):
         if self._client is None:
             try:
                 import anthropic
@@ -258,6 +265,28 @@ class LLM:
         raise LLMCallError(f"多模态结构化输出失败：{last}",
                            category="schema_invalid", retryable=True)
 
+    def warmup(self) -> bool:
+        """探测原生结构化输出是否可用，结果缓存。
+
+        ⚠️ **并行调用前必须先做这一步**：
+        多个 worker 同时去试原生路径时，它们会一起卡在那个会挂起的请求上
+        （实测原生路径在该端点会挂起数分钟）。先串行探一次，
+        失败就把 `_native_disabled` 置上，后面所有 worker 直接走提示词模式。
+        返回 True = 原生可用。
+        """
+        if self.structured_mode != "auto":
+            return self.structured_mode == "native"
+        if self._native_disabled:
+            return False
+        try:
+            class _Probe(BaseModel):
+                ok: bool
+            self._structured_native("只输出 JSON", '返回 {"ok": true}', _Probe, max_tokens=64)
+            return True
+        except Exception:  # noqa: BLE001
+            self._native_disabled = True
+            return False
+
     def _structured_native(self, system: str, user: str, schema: type[T],
                           model: str | None, max_tokens: int,
                           effort: str | None) -> T:
@@ -381,9 +410,10 @@ class LLM:
 
     # ---------------------------------------------------------------- 内部
     def _record(self, usage: Any) -> None:
-        self.usage["calls"] += 1
-        self.usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
-        self.usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
+        with self._lock:
+            self.usage["calls"] += 1
+            self.usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
+            self.usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
 
     @staticmethod
     def _is_retryable(e: Exception) -> bool:
