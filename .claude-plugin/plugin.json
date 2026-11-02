@@ -17,6 +17,5 @@
     "chinese"
   ],
   "skills": "./.claude/skills",
-  "commands": "./commands",
-  "agents": "./agents"
+  "commands": "./commands"
 }

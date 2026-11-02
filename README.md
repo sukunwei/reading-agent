@@ -255,7 +255,7 @@ python3 capture/capture.py --resume --out-dir "$OUT_DIR"       # 采集续跑
   ├── tooling/
   └── testing/
 commands/            /read-book 命令
-agents/              book-analyst 子 agent
+CLAUDE.md            项目操作记忆（硬约束 / 角色定义 / 排查表）
 capture/             采集层（Playwright）
 agent/               认知层（LangGraph）+ report.py
 ocr.swift            OCR 引擎（macOS Vision）
