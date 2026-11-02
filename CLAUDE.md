@@ -260,5 +260,4 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 
 - 只处理用户**已购或有合法阅读权限**的书籍。
 - `state/`、`.env` 含明文凭据 → 已 gitignore，**不要提交**。
-- 样例截图（付费书页面）出于版权考虑不入库。
 - 产物不外传。

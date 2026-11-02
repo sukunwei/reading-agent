@@ -19,10 +19,6 @@ bin/
 .reading-agent/
 .browser-profile/
 
-# 样例截图：来自付费书籍的页面，出于版权考虑不入库（本地保留）
-sample/*.png
-
-
 # 系统
 .DS_Store
 node_modules/

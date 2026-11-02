@@ -338,5 +338,4 @@ python3 agent/report.py --book <书名> --external                # 不内嵌 ec
 仅用于个人已购书籍的离线阅读辅助。
 
 - `state/` 含明文登录会话、`.env` 含 API 凭据 → **均已在 `.gitignore` 中，不要提交**
-- `sample/` 下的样例截图来自付费书籍的页面，出于版权考虑**不入库**（本地保留）
 - 产物不外传
