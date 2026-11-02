@@ -25,7 +25,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -118,7 +117,7 @@ def _retry_summary(llm: LLM, book_title: str, ch: dict, category: str,
     except LLMCallError as e:
         ch["summary_error"] = e.to_dict()
         return False, f"重试仍失败：{e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         ch["summary_error"] = {"category": "unknown", "retryable": False,
                                "message": str(e)[:300], "detail": ""}
         return False, f"重试仍失败：{e}"
@@ -243,7 +242,7 @@ def diagnose_and_recover(llm: LLM, book_title: str, chapters: list[dict],
 
 def render_diagnosis_md(report: dict, chapters: list[dict]) -> str:
     """诊断报告（Markdown）。"""
-    by_index = {c["index"]: c for c in chapters}
+    {c["index"]: c for c in chapters}
     L = ["# 采集与总结质量诊断报告\n"]
     s = report.get("summary", {})
     L.append(f"- 章节总数：{s.get('total', 0)}")

@@ -43,8 +43,6 @@
 
 from __future__ import annotations
 
-import os
-
 import argparse
 import asyncio
 import hashlib
@@ -56,8 +54,10 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-# 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
-DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
+sys.path.insert(0, str(ROOT))
+import contextlib
+
+from paths import book_paths, resolve_auth_dir, resolve_out_dir
 
 DEFAULT_BOOK_URL = ("https://weread.qq.com/web/reader/"
                     "95332ad0813ab8705g016ce7kc81322c012c81e728d9d180")
@@ -98,10 +98,8 @@ def read_jsonl(path: Path) -> list[dict]:
             line = line.strip()
             if not line:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 out.append(json.loads(line))
-            except Exception:
-                pass
     except Exception:
         pass
     return out
@@ -188,10 +186,8 @@ async def ensure_reading_mode(page) -> dict:
         return state
     if state["normal"]:
         print("  阅读模式: 当前是翻页（单页）→ 切到上下滚动双栏")
-        try:
+        with contextlib.suppress(Exception):
             await page.click(".readerControls_item.isNormalReader", timeout=8000)
-        except Exception:
-            pass
         await page.wait_for_timeout(4000)
     after = await page.evaluate("""() => ({
       horizontal: !!document.querySelector('.readerControls_item.isHorizontalReader'),
@@ -234,8 +230,9 @@ async def flip_next(page) -> bool:
 
 async def run(args) -> int:
     state_path = Path(args.state)
+    out_dir = resolve_out_dir(args.out_dir)
     if not state_path.is_absolute():
-        state_path = ROOT / state_path
+        state_path = Path(state_path).expanduser().resolve()
     if not state_path.exists():
         print(f"❌ 找不到登录态 {state_path}", file=sys.stderr)
         return 1
@@ -251,15 +248,11 @@ async def run(args) -> int:
         await page.goto(book_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(6000)
         for sel in (".wr_dialog_closeButton", ".wr_dialog_mask"):
-            try:
+            with contextlib.suppress(Exception):
                 await page.click(sel, timeout=1200)
-            except Exception:
-                pass
             await page.wait_for_timeout(300)
-        try:
+        with contextlib.suppress(Exception):
             await page.wait_for_function('document.querySelectorAll("canvas").length > 0', timeout=25000)
-        except Exception:
-            pass
         await page.wait_for_timeout(2500)
 
         # 视口高度 = 输出高 + header 高，裁掉 header 后正好 1280×815
@@ -290,8 +283,7 @@ async def run(args) -> int:
           const t = document.querySelector('.readerTopBar_title, .readerTopBar_title_text');
           return (document.title.split(' - ')[0] || (t ? t.innerText.trim() : '') || '未命名').trim();
         }""")
-        out_dir = DATA_HOME / "output" / book_title
-        state_dir = DATA_HOME / "state" / book_title
+        out_dir, state_dir = book_paths(out_dir, book_title)
         shots_dir = out_dir / "screenshots"
         shots_dir.mkdir(parents=True, exist_ok=True)
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -300,10 +292,8 @@ async def run(args) -> int:
 
         # ---- 目录 ----
         print("\n▶ 抓取目录…")
-        try:
+        with contextlib.suppress(Exception):
             await page.click("button.readerControls_item.catalog", timeout=10000)
-        except Exception:
-            pass
         await page.wait_for_timeout(2500)
         toc = await page.evaluate(JS_TOC)
         (out_dir / "toc.json").write_text(json.dumps(toc, ensure_ascii=False, indent=2), "utf-8")
@@ -353,10 +343,8 @@ async def run(args) -> int:
         # ---- 续跑定位：回到目录首项重走，已采页按 sha1 跳过 ----
         if args.resume and existing:
             print("\n▶ 续跑定位…")
-            try:
+            with contextlib.suppress(Exception):
                 await page.click("button.readerControls_item.catalog", timeout=10000)
-            except Exception:
-                pass
             await page.wait_for_timeout(1200)
             await page.evaluate("""() => {
               const el = document.querySelectorAll('.readerCatalog_list_item')[0];
@@ -443,8 +431,8 @@ async def run(args) -> int:
                 pager_top = max(0, min(int(pager_top) - clip["y"], clip["height"]))
                 columns = []
                 for c in geo.get("visCanvases", []):
-                    x0 = max(0, int(round(c["x"] - clip["x"])))
-                    x1 = min(clip["width"], int(round(c["x"] + c["w"] - clip["x"])))
+                    x0 = max(0, round(c["x"] - clip["x"]))
+                    x1 = min(clip["width"], round(c["x"] + c["w"] - clip["x"]))
                     if x1 - x0 > 20:
                         columns.append([x0, x1])
 
@@ -469,19 +457,27 @@ async def run(args) -> int:
 
     total = len(read_jsonl(pages_path))
     print(f"\n✅ 采集完成：本次 {captured} 页，累计 {total} 页")
-    print(f"   截图: {shots_dir.relative_to(ROOT)}")
-    print(f"   索引: {pages_path.relative_to(ROOT)}")
+    print(f"   截图: {shots_dir}")
+    print(f"   索引: {pages_path}")
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--book-url", default=None)
-    ap.add_argument("--state", default="state/storage_state_chrome.json")
+    ap.add_argument("--state", default=None,
+                    help="登录态文件（默认 <auth-dir>/storage_state.json）")
     ap.add_argument("--max-pages", type=int, default=100000)
     ap.add_argument("--max-stuck", type=int, default=4)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--out-dir", default=None,
+                    help="产物根目录（默认 $PWD/reading-output，可用 READING_AGENT_OUT 覆盖）")
+    ap.add_argument("--auth-dir", default=None,
+                    help="登录态目录（默认 ~/.reading-agent，可用 READING_AGENT_AUTH 覆盖）")
     args = ap.parse_args()
+    args.state = str(Path(args.state).expanduser()) if args.state \
+        else str(resolve_auth_dir(args.auth_dir) / "storage_state.json")
+    args.out_dir = resolve_out_dir(args.out_dir)
     return asyncio.run(run(args))
 
 

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -25,10 +26,8 @@ def read_jsonl(path: Path) -> list[dict]:
         for line in path.read_text("utf-8").splitlines():
             line = line.strip()
             if line:
-                try:
+                with contextlib.suppress(Exception):
                     out.append(json.loads(line))
-                except Exception:
-                    pass
     except FileNotFoundError:
         pass
     return out

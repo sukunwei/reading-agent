@@ -1,0 +1,67 @@
+[project]
+name = "weread-study-agent"
+version = "0.1.0"
+description = "微信读书整本书采集 → OCR → 插图识别 → 逐章精读笔记 + 全书五维评测"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.58.0",
+    "langgraph>=1.1.9",
+    "langgraph-checkpoint-sqlite>=3.1.3",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.16",
+    "pillow>=11.0",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.102.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".venv",
+    "__pycache__",
+    "reading-output",
+    "bin",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # Pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific
+]
+ignore = [
+    "E501",   # 行长：中文注释天然偏长，不硬性约束
+    "E402",   # 模块导入位置：paths.py 依赖 sys.path 注入，必须在 ROOT 设置之后导入
+    "SIM105", # contextlib.suppress：显式 try/except 更易读
+    # RUF001/002/003「易混淆 Unicode 字符」：本项目是中文代码库，
+    # 全角标点（：，。、「」）是正确用法，不该被当成 ASCII 混淆字符
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"agent/ocr.py" = ["PTH"]   # 大量 Path 拼接，保留可读性
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["reading-output/", "bin/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: 需要联网或调用真实 LLM 的测试",
+]

@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -25,9 +24,12 @@ from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 # 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
-DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
-STATE_DIR = DATA_HOME / "state"
-PROFILE_DIR = ROOT / ".browser-profile"
+sys.path.insert(0, str(ROOT))
+from paths import resolve_auth_dir
+
+AUTH_DIR = resolve_auth_dir()
+STATE_DIR = AUTH_DIR                 # 登录态独立放，不跟书产物混在一起
+PROFILE_DIR = AUTH_DIR / "browser-profile"
 DEFAULT_BOOK_URL = ("https://weread.qq.com/web/reader/"
                     "95332ad0813ab8705g016ce7kc81322c012c81e728d9d180")
 BOOK_URL = os.environ.get("BOOK_URL", DEFAULT_BOOK_URL)

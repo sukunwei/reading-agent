@@ -20,13 +20,16 @@ allowed-tools:
 把微信读书网页版的一整本书变成可精读、可评测的读书资产。
 
 **插件根目录**：`${CLAUDE_PLUGIN_ROOT}`
-**数据目录**：`${READING_AGENT_HOME:-${CLAUDE_PLUGIN_ROOT}}`（产物落在这里，不是插件目录）
+**产物目录**：**由用户指定**（见 Phase 1），不在插件目录里创建
+**登录态目录**：`${READING_AGENT_AUTH:-~/.reading-agent}`（凭据单独放，不跟产物混在一起）
 
 初始请求：$ARGUMENTS
 
 ---
 
-## Phase 1：拿到书籍地址
+## Phase 1：拿到书籍地址 **和产物目录**
+
+### 1.1 书籍地址
 
 1. 如果 `$ARGUMENTS` 里已经是一个 `https://weread.qq.com/web/reader/...` 地址 → 直接用。
 2. 否则用 **AskUserQuestion** 或直接提问，让用户粘贴微信读书的**书籍地址**（reader URL，不是书名页 URL）。
@@ -36,11 +39,22 @@ allowed-tools:
 
 3. 校验地址格式。不符合 → 重新问一次。
 
+### 1.2 产物目录（**必须让用户指定**）
+
+问用户想把产物放在哪（**不要**默认写到插件目录里）：
+
+> 产物放哪个目录？例如 `~/Documents/读书` 或 `/Users/你/reading-output`
+
+拿到路径后作为 `--out-dir` 传给后面所有命令。
+默认建议（用户不指定时）：`$PWD/reading-output`（当前工作目录下，不在插件目录里）。
+
+环境变量也可以：`READING_AGENT_OUT` 会作为兜底。
+
 ## Phase 2：确认登录态（未登录则让用户扫码）
 
 ```bash
-export READING_AGENT_HOME="${READING_AGENT_HOME:-${CLAUDE_PLUGIN_ROOT}}"
-ls "$READING_AGENT_HOME/state/storage_state.json" 2>/dev/null
+AUTH_DIR="${READING_AGENT_AUTH:-$HOME/.reading-agent}"
+ls "$AUTH_DIR/storage_state.json" 2>/dev/null
 ```
 
 **若登录态不存在或已失效**：
@@ -78,7 +92,10 @@ OCR 二进制不存在时 `agent/ocr.py` 会自动编译，可跳过这步。
 ## Phase 4：采集整本
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/capture/capture.py" --book-url "<BOOK_URL>"
+python3 "${CLAUDE_PLUGIN_ROOT}/capture/capture.py" \
+    --book-url "<BOOK_URL>" \
+    --out-dir "<OUT_DIR>" \
+    --auth-dir "${READING_AGENT_AUTH:-$HOME/.reading-agent}"
 ```
 
 - 视口 1280×815、整页截图、不含顶部 header
@@ -88,7 +105,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/capture/capture.py" --book-url "<BOOK_URL>"
 采完后先做一次质量体检：
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/agent/ocr.py"
+python3 "${CLAUDE_PLUGIN_ROOT}/agent/ocr.py" --out-dir "<OUT_DIR>"
 ```
 
 看输出里的 `覆盖率 / 平均置信度 / 闸门`：
@@ -98,24 +115,17 @@ python3 "${CLAUDE_PLUGIN_ROOT}/agent/ocr.py"
 ## Phase 5：插图识别（视觉模型读图）
 
 ```bash
-python3 -c "
-import sys; sys.path.insert(0, '${CLAUDE_PLUGIN_ROOT}')
-from pathlib import Path
-from agent.llm import LLM, load_dotenv
-from agent.figures import process_book_figures
-import glob, os
-load_dotenv(os.environ.get('READING_AGENT_HOME','${CLAUDE_PLUGIN_ROOT}') + '/.env')
-book = Path(glob.glob(os.environ.get('READING_AGENT_HOME','${CLAUDE_PLUGIN_ROOT}') + '/output/*')[0])
-state = Path(glob.glob(os.environ.get('READING_AGENT_HOME','${CLAUDE_PLUGIN_ROOT}') + '/state/*')[0])
-r = process_book_figures(LLM(), book, state, describe=True)
-print(r['stats'])
-"
+python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" --list --out-dir "<OUT_DIR>"   # 先确认书名
 ```
+
+> 实际上 `/read-book` 的完整链路（`agent/cli.py`）里已经包含插图识别节点
+> （主图：figures→load→summarize→diagnose→gate→review→render），这一步是
+> 想单独跑插图识别时才用。
 
 ## Phase 6：认知层（切分 → 逐章总结 → 诊断恢复 → 人工闸门 → 全书评测 → 渲染）
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" "<书名关键字>"
+python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" "<书名关键字>" --out-dir "<OUT_DIR>"
 ```
 
 这条命令走 LangGraph 主图，会：
@@ -129,13 +139,14 @@ python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" "<书名关键字>"
 
 | 产物 | 路径 |
 |---|---|
-| 逐章精读笔记 | `output/<书名>/chapter_summaries.md` |
-| 全书五维评测 | `output/<书名>/book_review.md` |
-| 整合版读书资产 | `output/<书名>/full_readnote.md` |
-| 诊断报告 | `output/<书名>/diagnosis.md` |
-| 清洗后全文 | `output/<书名>/full_text.txt` |
-| 逐页截图 | `output/<书名>/screenshots/` |
-| 分页 OCR | `output/<书名>/ocr_pages/` |
+| 逐章精读笔记 | `<OUT_DIR>/<书名>/chapter_summaries.md` |
+| 全书五维评测 | `<OUT_DIR>/<书名>/book_review.md` |
+| 整合版读书资产 | `<OUT_DIR>/<书名>/full_readnote.md` |
+| 诊断报告 | `<OUT_DIR>/<书名>/diagnosis.md` |
+| 清洗后全文 | `<OUT_DIR>/<书名>/full_text.txt` |
+| 逐页截图 | `<OUT_DIR>/<书名>/screenshots/` |
+| 分页 OCR | `<OUT_DIR>/<书名>/ocr_pages/` |
+| 续跑状态 | `<OUT_DIR>/<书名>/.state/` |
 
 汇报要点：
 - 覆盖率、平均字数/页、平均置信度
@@ -152,5 +163,6 @@ python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" "<书名关键字>"
 | 提示「连续内容不变」 | 书尾正常结束；或翻页失效 → 看 `state/<书名>/run_config.json` 的视口指纹是否被改过 |
 | OCR 文本里混进「上一页/下一页」 | OCR 阶段没裁 pager 行 → 重跑 `agent/ocr.py --force` |
 | 章节是空的 | 该章未采集到 → 用 `capture/capture.py --resume` 补采 |
+| 找不到已采集的书 | `--out-dir` 指错了 —— 三个命令必须用同一个 `--out-dir` |
 | 结构化输出报错 | 第三方端点不强制 JSON → 已自动降级；仍失败则换 `LLM_STRUCTURED_OUTPUT=prompt` |
 | 图表没被识别 | 两路信号不一致 → 看 `output/<书名>/figures/figures.json` 的 `verdict` 字段 |

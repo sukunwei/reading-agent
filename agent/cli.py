@@ -25,29 +25,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
-DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
+sys.path.insert(0, str(ROOT))
+from paths import book_paths, list_books, resolve_out_dir
+
 sys.path.insert(0, str(ROOT))
 
-from agent.llm import LLM, load_dotenv                 # noqa: E402
-from agent.nodes.review import render_review_md, review_book  # noqa: E402
-from agent.nodes.split import load_book_context         # noqa: E402
-from agent.nodes.summary import summarize_chapters      # noqa: E402
-from agent.schema import BookReview                      # noqa: E402
+from agent.llm import LLM, load_dotenv
+from agent.nodes.review import review_book
+from agent.nodes.split import load_book_context
+from agent.nodes.summary import summarize_chapters
 
 load_dotenv(ROOT / ".env")
 
 STAGES = ("ocr", "split", "summary", "review", "render", "all")
 
 
-def list_books() -> list[Path]:
-    out = DATA_HOME / "output"
-    if not out.exists():
-        return []
-    return sorted(d for d in out.iterdir() if d.is_dir())
-
-
 def pick_book(keyword: str) -> Path | None:
-    for b in list_books():
+    for b in list_books(resolve_out_dir()):
         if keyword in b.name:
             return b
     return None
@@ -62,7 +56,7 @@ def stage_ocr(book_dir: Path, state_dir: Path, force: bool) -> dict:
 
 
 def stage_split(book_dir: Path, state_dir: Path) -> list[dict]:
-    chapters, pages, quality = load_book_context(book_dir, state_dir)
+    chapters, _pages, _quality = load_book_context(book_dir, state_dir)
     (book_dir / "chapters.json").write_text(
         json.dumps([{k: v for k, v in c.items() if k != "text"} for c in chapters],
                    ensure_ascii=False, indent=2), "utf-8")
@@ -84,7 +78,7 @@ def stage_summary(llm: LLM, book_dir: Path, chapters: list[dict], force: bool) -
 def stage_review(llm: LLM, book_dir: Path, chapters: list[dict], quality: dict):
     try:
         review = review_book(llm, book_dir.name, chapters, quality)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  ❌ 评测失败：{e}")
         return None
     print(f"  综合 {review.avg_score:.2f} 分 → {review.level}")
@@ -104,15 +98,22 @@ def stage_render(book_dir: Path, chapters: list[dict], quality: dict, review) ->
 
 def run_graph(book_dir: Path, state_dir: Path, llm: LLM, resume: bool) -> int:
     """走 LangGraph 主图（含 HITL 人工闸门）。"""
-    from langgraph.checkpoint.sqlite import SqliteSaver
     from langgraph.graph import StateGraph
     from langgraph.types import Command
 
-    from agent.graph import (BookState, make_checkpointer, node_diagnose,
-                             node_figures, node_gate, node_load, node_render,
-                             node_review, node_summarize)
+    from agent.graph import (
+        BookState,
+        make_checkpointer,
+        node_diagnose,
+        node_figures,
+        node_gate,
+        node_load,
+        node_render,
+        node_review,
+        node_summarize,
+    )
 
-    db = DATA_HOME / "state" / f"{book_dir.name}.ckpt.sqlite"
+    db = book_dir / ".state" / f"{book_dir.name}.ckpt.sqlite"
     saver = make_checkpointer(db)
 
     g = StateGraph(BookState)
@@ -186,16 +187,20 @@ def main() -> int:
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--force-summary", action="store_true")
     ap.add_argument("--model", default=None)
+    ap.add_argument("--out-dir", default=None,
+                    help="产物根目录（默认 $PWD/reading-output，可用 READING_AGENT_OUT 覆盖）")
     args = ap.parse_args()
 
     if args.list or not args.book:
-        books = list_books()
+        out_dir = resolve_out_dir(args.out_dir)
+        books = list_books(out_dir)
         if not books:
-            print("output/ 下还没有采集好的书。先跑：python3 capture/capture.py")
+            print(f"{out_dir} 下还没有采集好的书。")
+            print("先跑：python3 capture/capture.py --book-url <URL> --out-dir", out_dir)
             return 1
         print("已采集的书：")
         for b in books:
-            pf = DATA_HOME / "state" / b.name / "pages.jsonl"
+            pf = b / ".state" / "pages.jsonl"
             n = sum(1 for _ in pf.open(encoding="utf-8")) if pf.exists() else 0
             print(f"  · {b.name}  ({n} 页)")
         return 0
@@ -204,7 +209,7 @@ def main() -> int:
     if not book_dir:
         print(f"❌ 找不到包含「{args.book}」的书。用 --list 看看有哪些。")
         return 1
-    state_dir = DATA_HOME / "state" / book_dir.name
+    _, state_dir = book_paths(resolve_out_dir(args.out_dir), book_dir.name)
 
     if args.mock:
         os.environ["MOCK"] = "1"

@@ -26,11 +26,8 @@ P1 —— 分页 OCR + 质量闸门
 
 from __future__ import annotations
 
-import os
-
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,7 +38,11 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 # 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
-DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or ROOT)
+sys.path.insert(0, str(ROOT))
+import contextlib
+
+from paths import book_paths, list_books, resolve_out_dir
+
 OCR_SRC = ROOT / "ocr.swift"
 BIN_DIR = ROOT / "bin"
 OCR_BIN = BIN_DIR / "ocr"
@@ -71,10 +72,8 @@ def read_jsonl(path: Path) -> list[dict]:
     for line in path.read_text("utf-8").splitlines():
         line = line.strip()
         if line:
-            try:
+            with contextlib.suppress(Exception):
                 out.append(json.loads(line))
-            except Exception:
-                pass
     return out
 
 
@@ -266,13 +265,14 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=40)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--rebuild", action="store_true", help="重新编译 OCR 二进制")
+    ap.add_argument("--out-dir", default=None,
+                    help="产物根目录（默认 $PWD/reading-output，可用 READING_AGENT_OUT 覆盖）")
     args = ap.parse_args()
 
     binary = build_ocr_binary(force=args.rebuild)
 
-    out_root = DATA_HOME / "output"
-    state_root = DATA_HOME / "state"
-    books = sorted([d for d in out_root.iterdir() if d.is_dir()]) if out_root.exists() else []
+    out_root = resolve_out_dir(args.out_dir)
+    books = list_books(out_root)
     if args.book:
         books = [b for b in books if args.book in b.name]
     if not books:
@@ -281,7 +281,7 @@ def main() -> int:
 
     for book_dir in books:
         print(f"\n▶ {book_dir.name}")
-        state_dir = state_root / book_dir.name
+        _, state_dir = book_paths(out_root, book_dir.name)
         rep = process_book(book_dir, state_dir, binary, batch=args.batch, force=args.force)
         if not rep:
             continue

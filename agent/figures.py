@@ -31,15 +31,13 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageFilter
 
 from .llm import LLM, _extract_json
 from .schema import FigureDescription
-
-# 数据目录（输出/状态）—— 装成插件时用 READING_AGENT_HOME 指到插件目录之外
-DATA_HOME = Path(os.environ.get("READING_AGENT_HOME") or Path(__file__).resolve().parent.parent)
 
 # 图注：行首 + 图/表编号 + 该行较短
 CAPTION_HEAD = re.compile(r"^\s*(图|表)\s*(\d+)\s*[-—－]\s*(\d+)\s*.{0,40}$")
@@ -149,7 +147,7 @@ def _region_above_caption(lines: list[dict], bx: int, by: int, bh: int,
     y_bottom = float(last.get("y", 0))
     x0 = min(float(last.get("x0", 0)), float(last.get("x1", 0))) * W
     x1 = max(float(last.get("x0", 0)), float(last.get("x1", 0))) * W
-    return [int(min(x0, bx)), int(y_bottom), int(max(x1 - min(x0, bx), 40)), int(30)]
+    return [int(min(x0, bx)), int(y_bottom), int(max(x1 - min(x0, bx), 40)), 30]
 
 
 def detect_figures(png_path: Path, text: str,
@@ -182,9 +180,9 @@ def detect_figures(png_path: Path, text: str,
             ry = float(r.get("y", 0))
             rx0 = float(r.get("x0", 0))
             rx1 = float(r.get("x1", 0))
-            if by + bh - 8 <= ry <= by + bh + 0.14 * H:
-                if not (rx1 < bx - 10 or rx0 > bx + bw + 10):
-                    cands.append((idx_r, (r.get("text") or "").strip()))
+            if (by + bh - 8 <= ry <= by + bh + 0.14 * H
+                    and not (rx1 < bx - 10 or rx0 > bx + bw + 10)):
+                cands.append((idx_r, (r.get("text") or "").strip()))
         for idx_r, txt in cands:
             m = CAPTION_HEAD.match(txt)
             if not m:
@@ -369,8 +367,7 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
     if not shots_root.exists():
         return {"figures": [], "stats": {}}
 
-    import glob as _glob
-    pngs = sorted(_glob.glob(str(shots_root / "*" / "page_*.png")))
+    pngs = sorted(shots_root.glob("*/page_*.png"))
     out_dir = book_dir / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -441,7 +438,7 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
                 else:
                     rec["error"] = "裁图区域过小"
                     stats["failed"] += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 rec["error"] = str(e)[:200]
                 stats["failed"] += 1
 
@@ -452,7 +449,7 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
             stats["batches"] += 1
             try:
                 descs = describe_figures_batch(llm, chunk, model=model)
-            except Exception as e:  # noqa: BLE001
+            except Exception:
                 # 批次失败 → 逐张重试（更稳）
                 for rec in chunk:
                     try:
@@ -460,11 +457,11 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
                                             rec["caption"], rec["source"], model=model)
                         rec["description"] = d.model_dump()
                         stats["described"] += 1
-                    except Exception as e2:  # noqa: BLE001
+                    except Exception as e2:
                         rec["error"] = str(e2)[:200]
                         stats["failed"] += 1
                 continue
-            for rec, d in zip(chunk, descs):
+            for rec, d in zip(chunk, descs, strict=False):
                 rec["description"] = d
                 stats["described"] += 1
             if on_progress:
@@ -473,11 +470,6 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
     (out_dir / "figures.json").write_text(
         json.dumps(all_figs, ensure_ascii=False, indent=2), "utf-8")
     return {"figures": all_figs, "stats": stats}
-
-
-def figures_for_chapter(figures: list[dict], start_page: int, end_page: int) -> list[dict]:
-    """取某章页区间内的插图。"""
-    return [f for f in figures if start_page <= f.get("page_no", -1) <= end_page]
 
 
 def format_figure_block(f: dict) -> str:

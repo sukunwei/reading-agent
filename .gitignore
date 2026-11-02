@@ -9,9 +9,14 @@ state/
 cookie.txt
 storage_state.json
 
-# 采集产物
+# 采集产物（路径由用户指定，默认 ./reading-output）
+reading-output/
 output/
 bin/
+
+# 登录态（默认 ~/.reading-agent）
+.reading-agent/
+.browser-profile/
 
 # 样例截图：来自付费书籍的页面，出于版权考虑不入库（本地保留）
 sample/*.png

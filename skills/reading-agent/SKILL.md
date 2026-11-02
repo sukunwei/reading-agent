@@ -46,16 +46,21 @@ version: 0.1.0
 
 ## 常用命令
 
-```bash
-export READING_AGENT_HOME="${READING_AGENT_HOME:-<插件根>}"
+**产物目录由用户指定**（`--out-dir`），不在 agent 内部创建；三个命令必须用同一个。
+登录态单独放 `~/.reading-agent/`（`--auth-dir` / `READING_AGENT_AUTH`）。
 
-python3 capture/login.py                 # 有头浏览器扫码登录
-python3 capture/extract_chrome_cookies.py # 从运行中的 Chrome 提取（免扫码）
-python3 capture/capture.py --book-url "<URL>"   # 采集整本（可重复执行续跑）
-python3 agent/ocr.py                     # 分页 OCR + 质量闸门
-python3 agent/cli.py <书名>               # 认知层全链路
-python3 agent/cli.py --list              # 列出已采集的书
+```bash
+export OUT_DIR="$HOME/Documents/读书"        # 用户指定的产物目录
+
+python3 capture/login.py                      # 有头浏览器扫码登录（→ ~/.reading-agent/）
+python3 capture/extract_chrome_cookies.py      # 从运行中的 Chrome 提取（免扫码）
+python3 capture/capture.py --book-url "<URL>" --out-dir "$OUT_DIR"   # 采集整本（可重复续跑）
+python3 agent/ocr.py --out-dir "$OUT_DIR"      # 分页 OCR + 质量闸门
+python3 agent/cli.py <书名> --out-dir "$OUT_DIR"   # 认知层全链路
+python3 agent/cli.py --list --out-dir "$OUT_DIR"   # 列出已采集的书
 ```
+
+不传 `--out-dir` 时默认 `$PWD/reading-output`；也可用 `READING_AGENT_OUT` 统一设置。
 
 ## 插图分流（M8）
 
@@ -81,5 +86,6 @@ python3 agent/cli.py --list              # 列出已采集的书
 ## 数据与合规
 
 - 只处理用户**已购或有合法阅读权限**的书籍
-- `state/` 含明文登录会话、`.env` 含 API 凭据 → 已在 `.gitignore` 中
+- **产物不写在 agent 目录里** —— 产物根目录由用户指定（`--out-dir`），默认 `$PWD/reading-output`
+- 登录态在 `~/.reading-agent/`、`.env` 含 API 凭据 → 均已 gitignore
 - 样例截图（付费书页面）不入库

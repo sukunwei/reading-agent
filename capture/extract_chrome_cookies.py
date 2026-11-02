@@ -21,7 +21,6 @@ macOS Chrome cookie 加密：
 
 import argparse
 import json
-import os
 import shutil
 import sqlite3
 import subprocess
@@ -29,7 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-CHROME_ROOT = Path(os.path.expanduser("~/Library/Application Support/Google/Chrome"))
+CHROME_ROOT = Path("~/Library/Application Support/Google/Chrome").expanduser()
 DOMAIN = "weread.qq.com"
 
 
@@ -46,7 +45,7 @@ def safe_storage_key() -> bytes:
         ["-s", "Chrome Safe Storage", "-a", "Chrome", "-w"],
         ["-s", "Chrome Safe Storage", "-w"],
     ):
-        out = subprocess.run(["security", "find-generic-password"] + args,
+        out = subprocess.run(["security", "find-generic-password", *args],
                              capture_output=True, text=True)
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip().encode("utf-8")
@@ -70,8 +69,8 @@ def decrypt_value(enc: bytes, key: bytes, host_key: str = "") -> str | None:
         return enc.decode("utf-8", errors="replace")
     if enc[:3] == b"v20":
         return None  # App-Bound Encryption，macOS 上不会出现
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
     kdf = PBKDF2HMAC(
@@ -109,7 +108,7 @@ def main() -> int:
 
     # 复制一份，避免与运行中的 Chrome 抢锁
     tmpdir = tempfile.mkdtemp(prefix="chrome_cookies_")
-    tmp_db = os.path.join(tmpdir, "Cookies")
+    tmp_db = str(Path(tmpdir) / "Cookies")
     shutil.copy2(db, tmp_db)
 
     key = safe_storage_key()
@@ -132,10 +131,7 @@ def main() -> int:
     for name, enc_val, blob, host, cpath, exp_utc, secure, httponly, samesite in rows:
         raw = blob if blob else (enc_val or b"").encode("utf-8", errors="replace")
         # 未加密的列存在时优先用它
-        if enc_val is None and blob is None:
-            val = ""
-        else:
-            val = decrypt_value(raw, key, host)
+        val = "" if enc_val is None and blob is None else decrypt_value(raw, key, host)
         if val is None:
             skipped.append(name)
             continue
@@ -143,7 +139,7 @@ def main() -> int:
         expires = -1
         if exp_utc:
             import datetime
-            epoch = datetime.datetime(1601, 1, 1, tzinfo=datetime.timezone.utc)
+            epoch = datetime.datetime(1601, 1, 1, tzinfo=datetime.UTC)
             ts = epoch + datetime.timedelta(microseconds=exp_utc / 10)
             expires = int(ts.timestamp())
 

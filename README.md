@@ -209,31 +209,38 @@ cp .env.example .env && $EDITOR .env     # 填 ANTHROPIC_API_KEY / ANTHROPIC_AUT
 
 ### 命令行方式
 
+产物目录**由你指定**，不在 agent 内部创建：
+
 ```bash
-export READING_AGENT_HOME="${READING_AGENT_HOME:-$PWD}"   # 产物目录，默认插件根
+export OUT_DIR="$HOME/Documents/读书"    # 想放哪就放哪
 
 # 1) 登录（有头浏览器扫码；或从运行中的 Chrome 免扫码提取）
+#    登录态默认放 ~/.reading-agent（READING_AGENT_AUTH 可改）
 python3 capture/login.py
 #   python3 capture/extract_chrome_cookies.py
 
 # 2) 采集整本（中断后重跑同一条命令即可续跑）
-python3 capture/capture.py --book-url "<BOOK_URL>"
+python3 capture/capture.py --book-url "<BOOK_URL>" --out-dir "$OUT_DIR"
 
 # 3) OCR + 质量闸门
-python3 agent/ocr.py
+python3 agent/ocr.py --out-dir "$OUT_DIR"
 
 # 4) 认知层全链路（LangGraph）
-python3 agent/cli.py <书名关键字>
+python3 agent/cli.py <书名关键字> --out-dir "$OUT_DIR"
 ```
+
+> 三个命令的 `--out-dir` 必须一致。
+> 不传时默认 `$PWD/reading-output`（当前工作目录下，**不在 agent 目录里**）；
+> 也可用环境变量 `READING_AGENT_OUT` 统一设置。
 
 其它入口：
 
 ```bash
-python3 agent/cli.py --list                      # 列出已采集的书
-python3 agent/cli.py <书名> --stage ocr          # 只跑某一步
-python3 agent/cli.py <书名> --resume             # 断点续跑
-python3 agent/cli.py <书名> --mock               # 离线跑（不调 API，验证管道）
-python3 capture/capture.py --resume              # 采集续跑
+python3 agent/cli.py --list --out-dir "$OUT_DIR"          # 列出已采集的书
+python3 agent/cli.py <书名> --stage ocr --out-dir "$OUT_DIR"   # 只跑某一步
+python3 agent/cli.py <书名> --resume --out-dir "$OUT_DIR"      # 断点续跑
+python3 agent/cli.py <书名> --mock --out-dir "$OUT_DIR"        # 离线跑（不调 API）
+python3 capture/capture.py --resume --out-dir "$OUT_DIR"       # 采集续跑
 ```
 
 ---
@@ -241,7 +248,7 @@ python3 capture/capture.py --resume              # 采集续跑
 ## 产物
 
 ```
-output/<书名>/
+<OUT_DIR>/<书名>/
 ├── screenshots/<NNN_章名>/page_NNNN.png    整页截图 1280×815（不含 header）
 ├── ocr_pages/<NNN_章名>/page_NNNN.txt      一页一 TXT，与 PNG 一一对应
 ├── figures/figures.json                    插图记录（编号 / 标题 / bbox / 视觉描述）

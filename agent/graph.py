@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
-from .llm import LLM
 from .figures import process_book_figures
+from .llm import LLM
 from .nodes.diagnose import diagnose_and_recover, render_diagnosis_md
 from .nodes.review import render_review_md, review_book
 from .nodes.split import load_book_context
@@ -59,7 +59,7 @@ def node_figures(state: BookState) -> BookState:
     res = process_book_figures(
         llm, book_dir, state_dir, describe=True,
         on_progress=lambda rec, st: print(
-            f"  📊 {str(rec.get('caption_no')):8s} {str(rec.get('caption'))[:24]:26s} {rec.get('verdict')}"))
+            f"  📊 {rec.get('caption_no')!s:8s} {str(rec.get('caption'))[:24]:26s} {rec.get('verdict')}"))
     state["figures"] = res.get("figures", [])
     state["figure_stats"] = res.get("stats", {})
     return state
@@ -130,7 +130,7 @@ def node_gate(state: BookState) -> BookState:
 
     # 1) 整书级闸门
     if quality and not quality.get("gate_passed", True):
-        for k, v in quality.get("gate", {}).items():
+        for _k, v in quality.get("gate", {}).items():
             if not v:
                 needs.append(-1)          # -1 表示整书级别问题
     # 2) 章节级：
@@ -141,9 +141,7 @@ def node_gate(state: BookState) -> BookState:
         chars = ch.get("chars", 0)
         if chars <= 0:
             continue
-        if not ch.get("summary_done"):
-            needs.append(ch["index"])
-        elif chars < 200:
+        if not ch.get("summary_done") or chars < 200:
             needs.append(ch["index"])
 
     state["needs_review"] = sorted(set(needs))

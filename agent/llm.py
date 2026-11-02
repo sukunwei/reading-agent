@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
+
 
 # ⚠️ 默认模型不写死：优先用 LLM_MODEL → ANTHROPIC_MODEL（与 Claude Code 全局配置一致）
 #    再退回官方 Claude。若走的是第三方 Anthropic 兼容端点（如 MiniMax），
@@ -149,10 +151,8 @@ class LLM:
             timeout = os.environ.get("API_TIMEOUT_MS")
             kwargs: dict[str, Any] = {}
             if timeout:
-                try:
+                with contextlib.suppress(ValueError):
                     kwargs["timeout"] = float(timeout) / 1000.0
-                except ValueError:
-                    pass
             self._client = anthropic.Anthropic(**kwargs)
         return self._client
 
@@ -173,7 +173,7 @@ class LLM:
         if self.structured_mode in ("native", "auto") and not self._native_disabled:
             try:
                 return self._structured_native(system, user, schema, model, max_tokens, effort)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 if self.structured_mode == "native":
                     raise
                 self._native_disabled = True
@@ -223,7 +223,7 @@ class LLM:
                     return msg.parsed
                 raise LLMCallError("未返回结构化结果",
                                    category="schema_invalid", retryable=True)
-            except Exception as e:  # noqa: BLE001
+            except Exception:
                 if self.structured_mode == "native":
                     raise
                 self._native_disabled = True
@@ -258,7 +258,7 @@ class LLM:
                 msgs.append({"role": "assistant", "content": raw if "raw" in dir() else ""})
                 msgs.append({"role": "user",
                              "content": f"上一次输出不符合 schema：\n{last}\n请只输出修正后的 JSON。"})
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 if not self._is_retryable(e):
                     raise
                 time.sleep(min(20, 2 ** attempt * 3))
@@ -283,7 +283,7 @@ class LLM:
                 ok: bool
             self._structured_native("只输出 JSON", '返回 {"ok": true}', _Probe, max_tokens=64)
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._native_disabled = True
             return False
 
@@ -315,7 +315,7 @@ class LLM:
                         category="truncated" if msg.stop_reason == "max_tokens" else "schema_invalid",
                         retryable=True)
                 return parsed
-            except Exception as e:  # noqa: BLE001 - 统一在这里分级
+            except Exception as e:
                 last_exc = e
                 if not self._is_retryable(e) or attempt == 3:
                     break
@@ -369,7 +369,7 @@ class LLM:
                     "role": "user",
                     "content": f"上一次的输出不符合 schema，校验错误如下：\n{last_err}\n"
                                f"请只输出修正后的 JSON 对象，不要任何其他文字。"})
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 if not self._is_retryable(e):
                     raise
                 time.sleep(min(30, 2 ** attempt * 3))
@@ -399,7 +399,7 @@ class LLM:
                     msg = stream.get_final_message()
                 self._record(msg.usage)
                 return "".join(b.text for b in msg.content if b.type == "text")
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 last_exc = e
                 if not self._is_retryable(e) or attempt == 3:
                     break
@@ -486,10 +486,10 @@ def build_nested(model: type[BaseModel]) -> dict[str, Any]:
 
 def load_dotenv(path: str | os.PathLike) -> None:
     """极简 .env 读取（不引第三方依赖）。"""
-    p = os.fspath(path)
-    if not os.path.exists(p):
+    p = Path(path)
+    if not p.exists():
         return
-    with open(p, encoding="utf-8") as f:
+    with p.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:

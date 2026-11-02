@@ -7,7 +7,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from ..llm import LLM, LLMCallError, classify_exception
+from ..llm import LLM, classify_exception
 from ..prompts import CHAPTER_SUMMARY_SYSTEM, CHAPTER_SUMMARY_USER
 from ..schema import ChapterSummary
 
@@ -66,7 +66,7 @@ def summarize_chapters(llm: LLM, book_title: str, chapters: list[dict],
             ch["summary"] = s.model_dump()
             ch["summary_done"] = True
             ch["summary_error"] = None
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             ch["summary_done"] = False
             category, retryable = classify_exception(e)
             ch["summary_error"] = {
@@ -117,7 +117,7 @@ def _summarize_chapters_seq(llm: LLM, book_title: str, chapters: list[dict],
             ch["summary"] = s.model_dump()
             ch["summary_done"] = True
             ch["summary_error"] = None
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             ch["summary_done"] = False
             category, retryable = classify_exception(e)
             ch["summary_error"] = {
