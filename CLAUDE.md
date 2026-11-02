@@ -163,7 +163,32 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 
 ---
 
-## 5. 目录结构
+## 5. 当前进度
+
+| # | 里程碑 | 产出物 | 状态 |
+|---|---|---|---|
+| M0 | 登录态就绪 | `~/.reading-agent/storage_state.json` | ✅ |
+| M1 | OCR 引擎优化 | `utils/ocr.swift`（12 项改动，回归通过） | ✅ |
+| M2 | 采集层跑通 | `capture/capture.py`（1280×815 整页，不含 header） | ✅ 已验证 |
+| M3 | 全书 OCR + 质量报告 | `agent/ocr.py` → `ocr_pages/` + `quality_report.json` | ✅ |
+| M4 | 清洗 + 切分 + 逐章总结 | `agent/nodes/` + `chapters/*.json` + `chapter_summaries.md` | ✅ 离线验证 |
+| M5 | 全书评测 | `book_review.md` + `full_readnote.md` | ✅ 离线验证 |
+| M6 | 端到端 CLI + 续跑 + HITL | `agent/cli.py` + SQLite checkpoint | ✅ |
+| M7 | 接入真实 API | `.env`（从 `~/.claude/settings.json` 提取） | ✅ |
+| M8 | 插图分流 | `agent/figures.py`（双信号判定 + 视觉读图 + 内联正文） | ✅ |
+| M9 | 打包为 Claude Code 插件 | `.claude-plugin/` + `/read-book` + skill | ✅ |
+
+**已跑通**：时势 225 页 / 15 章 / 102 张图 → 逐章 60/60 成功 → 评测 7.4~7.7 分 → HTML 报告。
+
+**待办**
+- 跑第二本书验证泛化（本书是 102 图 15 章的硬样本）
+- 插件真机实测（需重开 Claude Code 会话才会加载 marketplace 插件）
+- `agent/llm.py` 的 dict 兜底修复**未做重跑验证**（下次真实运行若仍报
+  `'dict' object has no attribute 'model_dump'`，把日志给我）
+
+---
+
+## 6. 目录结构
 
 ```
 .claude-plugin/       插件清单（plugin.json + marketplace.json）
@@ -191,7 +216,7 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 
 ---
 
-## 6. 产物
+## 7. 产物
 
 ```
 <OUT_DIR>/<书名>/
@@ -208,7 +233,7 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 
 ---
 
-## 7. 排查表
+## 8. 排查表
 
 | 现象 | 处理 |
 |---|---|
@@ -224,14 +249,14 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 
 ---
 
-## 8. 工具链
+## 9. 工具链
 
 `pyproject.toml` 固化了 ruff（E/F/W/I/UP/B/SIM/PTH/RUF）、mypy、pytest 配置。
 `ruff check .` 必须全绿。中文全角标点按 RUF001/002/003 忽略（中文项目本该用全角）。
 
 ---
 
-## 9. 合规
+## 10. 合规
 
 - 只处理用户**已购或有合法阅读权限**的书籍。
 - `state/`、`.env` 含明文凭据 → 已 gitignore，**不要提交**。
