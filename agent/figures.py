@@ -268,6 +268,11 @@ FIGURE_VISION_SYSTEM = """你是图表解读专家。用户会给你一张书里
 - title：图表标题（用给定的图注，若无则从图上读）
 - axes：坐标轴说明（x 轴是什么、y 轴是什么、范围与单位）；非坐标图写 {}
 - key_data：图上能读到的关键数据点或趋势，每条一句话，最多 6 条
+  ★ 例外 —— 如果这张图是**表格**，必须**逐行完整转录**，不要转述、不要挑代表条目：
+    - 每一行表格放进一条 key_data，格式为「第1列 | 第2列 | 第3列 | 第4列」
+    - **所有列都要保留**（单词、音标、词性、释义等），**所有行都要写出来**
+      （词表类表格通常 15~20 行）
+    - 此时 key_data 最多 30 条
 - insight：一句话说明这张图想说明什么
 - source：数据来源（若图注里给了就照抄，否则空字符串）"""
 
@@ -286,7 +291,9 @@ def describe_figure(llm: LLM, img_path: Path, caption: str | None,
         image_b64=data,
         schema=FigureDescription,
         model=model or llm.review_model,
-        max_tokens=4000,
+        # ⚠️ 4000 不够：表格类要逐行转录（15~20 行 × 4 列），
+        #    加上思考 token 会被截断成半个 JSON。
+        max_tokens=16000,
         effort=os.environ.get("LLM_VISION_EFFORT", "low"),
     )
 
@@ -301,6 +308,11 @@ BATCH_VISION_SYSTEM = """你是图表解读专家。用户会一次给你多张�
 - title：图表标题
 - axes：坐标轴说明（x 轴是什么、y 轴是什么、范围与单位）；非坐标图给 {}
 - key_data：图上能读到的关键数据点或趋势，每条一句话，最多 6 条
+  ★ 例外 —— 如果这张图是**表格**，必须**逐行完整转录**，不要转述、不要挑代表条目：
+    - 每一行表格放进一条 key_data，格式为「第1列 | 第2列 | 第3列 | 第4列」
+    - **所有列都要保留**（单词、音标、词性、释义等），**所有行都要写出来**
+      （词表类表格通常 15~20 行）
+    - 此时 key_data 最多 30 条
 - insight：一句话说明这张图想说明什么
 - source：数据来源（图注里给了就照抄，否则空字符串）"""
 
@@ -372,23 +384,21 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
     out_dir = book_dir / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 续跑：已有 figures.json 且不是强制 → 直接复用（视觉调用不便宜，别重跑）
+    # 续跑：已有 figures.json 且不是强制 → **逐页复用**已识别的视觉结果
+    #（视觉调用不便宜，别重跑），但**续采新增的页仍要识别** ——
+    #  原实现是整份照搬 figures.json，续采新增的页会永远拿不到插图描述。
     fj = out_dir / "figures.json"
+    cached: list[dict] = []
     if fj.exists() and describe and not force:
         try:
-            cached = json.loads(fj.read_text("utf-8"))
-            if cached and all(x.get("description") or x.get("error") for x in cached):
-                if on_progress:
-                    on_progress(cached[-1], {"batches": 0, "described": len(cached),
-                                             "pages_with_figures": len(cached)})
-                return {"figures": cached,
-                        "stats": {"pages": len(pngs), "pages_with_figures": len(cached),
-                                  "caption_only": 0, "box_only": 0,
-                                  "described": sum(1 for x in cached if x.get("description")),
-                                  "failed": sum(1 for x in cached if x.get("error")),
-                                  "noise_lines_dropped": 0, "batches": 0, "cached": True}}
+            cached = json.loads(fj.read_text("utf-8")) or []
         except Exception:
-            pass
+            cached = []
+    cached_by_key: dict[tuple, dict] = {}
+    for x in cached:
+        if x.get("page_no") is None:
+            continue
+        cached_by_key[(int(x["page_no"]), tuple(x.get("box") or ()))] = x
 
     all_figs: list[dict] = []
     pending: list[dict] = []          # 待视觉识别的
@@ -426,6 +436,20 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
                 "description": None,
             }
             all_figs.append(rec)
+
+            # 命中缓存 → 复用已有视觉结果，不裁图、不调视觉模型
+            hit = cached_by_key.get((rec["page_no"], tuple(rec["box"])))
+            if hit is not None and (hit.get("description") or hit.get("error")):
+                rec["description"] = hit.get("description")
+                if hit.get("error"):
+                    rec["error"] = hit["error"]
+                if hit.get("crop"):
+                    rec["crop"] = hit["crop"]
+                if rec.get("description"):
+                    stats["described"] += 1
+                else:
+                    stats["failed"] += 1
+                continue
 
             # 裁图（视觉输入）
             x, y, w, h = f["box"]
