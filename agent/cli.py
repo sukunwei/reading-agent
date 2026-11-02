@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
 sys.path.insert(0, str(ROOT))
-from paths import book_paths, list_books, resolve_out_dir
+from shared.paths import book_paths, list_books, resolve_out_dir
 
 sys.path.insert(0, str(ROOT))
 

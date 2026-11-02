@@ -86,7 +86,15 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 | 解析模型输出用 **`raw_decode()`** | 模型偶尔输出「示例 JSON + 正式 JSON」两段，`find('{')..rfind('}')` 会报 "Extra data" |
 | 原生路径返回 **dict** 时要转成 schema 实例 | 实测该端点偶发返回原始 dict → `'dict' object has no attribute 'model_dump'` |
 
-### 3.4 流程层
+### 3.4 分层与依赖
+
+| 约束 | 原因 |
+|---|---|
+| **`capture/` 不得 import `agent/`** | 采集层在认知层**之下**，下层依赖上层是倒置。两层只共用 `shared/` |
+| 两层共用的东西放 `shared/` | `paths.py`（路径解析）、`stages.py`（计时与 token 台账）都被两层用到 |
+| 反过来 `agent/` → `capture/` 允许 | 认知层要用采集层的能力（OCR、图表识别） |
+
+### 3.5 流程层
 
 | 约束 | 原因 |
 |---|---|
@@ -168,13 +176,18 @@ capture/             采集层（Playwright）
 agent/               认知层（LangGraph）
   ocr.py                    分页 OCR + 质量闸门
   figures.py                插图分流（检测 + 视觉识别 + 内联正文）
-  stages.py                 阶段计时 + token 台账
   schema.py / llm.py / prompts.py
   nodes/{clean,split,summary,diagnose,review}.py
   graph.py / cli.py / report.py
+shared/              两层共用（不依赖任何一层）
+  paths.py                 路径解析（产物/登录态目录由用户指定）
+  stages.py                阶段计时 + token 台账
 ocr.swift            OCR 引擎（macOS Vision）
-paths.py             路径解析（产物目录由用户指定）
 ```
+
+**依赖方向**：`capture/` 和 `agent/` 是**平级的两层**，都只依赖 `shared/`。
+**不允许 `capture/` import `agent/`**（下层不能依赖上层）。
+反过来 `agent/` 可以依赖 `capture/`（认知层要用采集层的能力）。
 
 ---
 

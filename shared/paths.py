@@ -49,7 +49,17 @@ def book_paths(out_dir: Path, book_title: str) -> tuple[Path, Path]:
 
 
 def list_books(out_dir: Path) -> list[Path]:
-    """列出已采集的书（产物目录下的子目录）。"""
+    """列出已采集的书。
+
+    只认「像一本书的目录」——含 toc.json 或 screenshots/ 子目录，
+    避免把 assets/ 这类同级目录误当成书。
+    """
     if not out_dir.exists():
         return []
-    return sorted(d for d in out_dir.iterdir() if d.is_dir() and not d.name.startswith("."))
+    books = []
+    for d in sorted(out_dir.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if (d / "toc.json").exists() or (d / "screenshots").is_dir() or (d / "chapters").is_dir():
+            books.append(d)
+    return books

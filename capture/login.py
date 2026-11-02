@@ -25,7 +25,7 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parent.parent
 # 数据目录（输出/状态）：装成插件时不该写进插件目录 → READING_AGENT_HOME 可覆盖
 sys.path.insert(0, str(ROOT))
-from paths import resolve_auth_dir
+from shared.paths import resolve_auth_dir
 
 AUTH_DIR = resolve_auth_dir()
 STATE_DIR = AUTH_DIR                 # 登录态独立放，不跟书产物混在一起

@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 from typing import TypedDict
 
+from shared.stages import Timer, export_usage_log, record_stage
+
 from .figures import process_book_figures
 from .llm import LLM
 from .nodes.diagnose import diagnose_and_recover, render_diagnosis_md
@@ -24,7 +26,6 @@ from .nodes.review import render_review_md, review_book
 from .nodes.split import load_book_context
 from .nodes.summary import summarize_chapters
 from .prompts import RENDER_CHAPTER_MD
-from .stages import Timer, export_usage_log, record_stage
 
 
 class BookState(TypedDict, total=False):

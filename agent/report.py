@@ -35,8 +35,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agent.stages import aggregate_usage, load_stages, load_usage
-from paths import book_paths, list_books, resolve_out_dir
+from shared.paths import book_paths, list_books, resolve_out_dir
+from shared.stages import aggregate_usage, load_stages, load_usage
 
 ECHARTS_URL = "https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"
 ECHARTS_REL = "assets/echarts.min.js"   # 相对 <out>/；报告在 <out>/<书名>/ 下，引用时用 relpath

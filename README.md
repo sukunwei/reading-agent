@@ -258,8 +258,8 @@ commands/            /read-book 命令
 CLAUDE.md            项目操作记忆（硬约束 / 角色定义 / 排查表）
 capture/             采集层（Playwright）
 agent/               认知层（LangGraph）+ report.py
+shared/              两层共用：paths.py（路径解析）+ stages.py（计时/token 台账）
 ocr.swift            OCR 引擎（macOS Vision）
-paths.py             路径解析（产物目录由用户指定）
 ```
 
 ---

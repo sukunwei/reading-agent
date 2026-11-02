@@ -58,8 +58,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import contextlib
 
-from agent.stages import record_stage
-from paths import book_paths, resolve_auth_dir, resolve_out_dir
+from shared.paths import book_paths, resolve_auth_dir, resolve_out_dir
+from shared.stages import record_stage
 
 DEFAULT_BOOK_URL = ("https://weread.qq.com/web/reader/"
                     "95332ad0813ab8705g016ce7kc81322c012c81e728d9d180")

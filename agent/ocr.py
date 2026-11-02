@@ -41,8 +41,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import contextlib
 
-from agent.stages import record_stage
-from paths import book_paths, list_books, resolve_out_dir
+from shared.paths import book_paths, list_books, resolve_out_dir
+from shared.stages import record_stage
 
 OCR_SRC = ROOT / "ocr.swift"
 BIN_DIR = ROOT / "bin"
