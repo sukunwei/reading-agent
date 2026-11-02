@@ -245,6 +245,25 @@ python3 capture/capture.py --resume --out-dir "$OUT_DIR"       # 采集续跑
 
 ---
 
+## 仓库结构
+
+```
+.claude-plugin/       插件清单（plugin.json + marketplace.json）
+.claude/skills/       项目级 skill
+  ├── reading-agent/     ← 本项目自己的 skill（插件复用同一份）
+  ├── coding-standards/  ← python-best-practices
+  ├── tooling/
+  └── testing/
+commands/            /read-book 命令
+agents/              book-analyst 子 agent
+capture/             采集层（Playwright）
+agent/               认知层（LangGraph）+ report.py
+ocr.swift            OCR 引擎（macOS Vision）
+paths.py             路径解析（产物目录由用户指定）
+```
+
+---
+
 ## 产物
 
 ```
@@ -270,8 +289,12 @@ python3 capture/capture.py --resume --out-dir "$OUT_DIR"       # 采集续跑
 
 ```bash
 python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"      # 随时离线重建
-python3 agent/report.py --book <书名> --inline                 # 单文件（echarts 内嵌）
+python3 agent/report.py --book <书名> --external                # 不内嵌 echarts（HTML 更小）
 ```
+
+> **直接双击 `report.html` 就能看，不需要起 HTTP 服务。**
+> 默认 ECharts 已内嵌进 HTML（1.4 MB），整个文件自包含 —— 复制到任何地方、发给谁都行。
+> `--external` 则改为引用 `<OUT_DIR>/assets/echarts.min.js`，HTML 更小但不能单独复制走。
 
 **报告包含 5 块**：
 
@@ -284,7 +307,7 @@ python3 agent/report.py --book <书名> --inline                 # 单文件（e
 | ⑤ 附录 | 环境信息、产物清单、数据来源说明 |
 
 **图表库本地化**：ECharts 首次使用时下载到 `<OUT_DIR>/assets/echarts.min.js`，
-报告用**相对路径**引用 → 不依赖 CDN，离线可开、可分享、可长期存档。
+默认**内嵌进 HTML**（不依赖 CDN、不依赖 assets 目录，单文件自包含）。
 （`--no-echarts` 可退回纯 CSS 条形。）
 
 **可离线重建**：报告只读既有产物与 `.state/` 里的埋点，**不重跑流水线** ——

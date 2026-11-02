@@ -533,7 +533,7 @@ var RADAR = {radar};
 # --------------------------------------------------------------------------- 生成
 
 def generate(book_dir: Path, state_dir: Path, out_dir_root: Path | None = None,
-             inline: bool = False, no_echarts: bool = False) -> Path:
+             inline: bool = True, no_echarts: bool = False) -> Path:
     """生成 report.html（+ report.json），返回 HTML 路径。
 
     可离线重建：只读既有产物，不重跑流水线。
@@ -553,9 +553,8 @@ def generate(book_dir: Path, state_dir: Path, out_dir_root: Path | None = None,
         js_path = out_dir / ECHARTS_REL
         if js_path.exists():
             js = js_path.read_text("utf-8")
-            html_text = html_text.replace(f'<script src="{echarts_src}"></script>', "")
-            html_text = html_text.replace("<script>var RADAR",
-                                          f"<script>{js}</script>\n<script>var RADAR")
+            html_text = html_text.replace(f'<script src="{echarts_src}"></script>',
+                                          f"<script>{js}</script>")
 
     html_path = book_dir / "report.html"
     html_path.write_text(html_text, "utf-8")
@@ -570,7 +569,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--book", required=True, help="书名关键字")
     ap.add_argument("--out-dir", default=None)
-    ap.add_argument("--inline", action="store_true", help="把 echarts 内嵌进 HTML（单文件）")
+    ap.add_argument("--external", action="store_true",
+                    help="不内嵌 echarts（引用 <out>/assets/echarts.min.js，HTML 更小但不能单独复制走）")
     ap.add_argument("--no-echarts", action="store_true", help="不用图表库，纯 CSS 条形")
     args = ap.parse_args()
 
@@ -583,7 +583,7 @@ def main() -> int:
     _, state_dir = book_paths(out_dir, book_dir.name)
 
     html_path = generate(book_dir, state_dir, out_dir_root=out_dir,
-                         inline=args.inline, no_echarts=args.no_echarts)
+                         inline=not args.external, no_echarts=args.no_echarts)
     size = html_path.stat().st_size
     print(f"✅ 报告 → {html_path}  ({size / 1024:.0f} KB)")
     if not args.no_echarts:

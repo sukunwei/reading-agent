@@ -8,5 +8,15 @@
   },
   "homepage": "https://github.com/sukunwei/reading-agent",
   "repository": "https://github.com/sukunwei/reading-agent",
-  "keywords": ["reading", "book", "ocr", "weread", "summary", "chinese"]
+  "keywords": [
+    "reading",
+    "book",
+    "ocr",
+    "weread",
+    "summary",
+    "chinese"
+  ],
+  "skills": "./.claude/skills",
+  "commands": "./commands",
+  "agents": "./agents"
 }
