@@ -35,6 +35,10 @@ from agent.nodes.review import review_book
 from agent.nodes.split import load_book_context
 from agent.nodes.summary import summarize_chapters
 
+# ⚠️ 凭据默认来自**继承的环境变量**（Claude Code 会注入 ANTHROPIC_AUTH_TOKEN /
+#    ANTHROPIC_BASE_URL / ANTHROPIC_MODEL）—— 插件不需要自带 .env。
+#    这里仍读一次 .env，只是给「独立于 Claude Code 运行」时留一个可选覆盖口；
+#    文件不存在时 load_dotenv 直接返回，env 优先级也高于它（用的是 setdefault）。
 load_dotenv(ROOT / ".env")
 
 STAGES = ("ocr", "split", "summary", "review", "render", "report", "all")

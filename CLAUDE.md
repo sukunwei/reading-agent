@@ -28,7 +28,7 @@ figures → load → summarize → diagnose → gate(HITL) → review → render
 
 ```bash
 pip install -r requirements.txt
-swiftc -O ocr.swift -o bin/ocr                 # OCR 引擎（macOS Vision）
+swiftc -O utils/ocr.swift -o utils/bin/ocr      # OCR 引擎（macOS Vision）
 
 export OUT_DIR="$HOME/Documents/readbook"             # 产物目录由用户指定
 python3 capture/login.py                          # 有头浏览器扫码登录（→ ~/.reading-agent/）
@@ -99,7 +99,7 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 | 约束 | 原因 |
 |---|---|
 | **产物目录由用户指定** | 不在 agent / plugin 目录里创建输出。`--out-dir` > `READING_AGENT_OUT` > `$PWD/reading-output` |
-| **登录态单独放 `~/.reading-agent/`** | 不跟书产物混在一起（`.env` 与 `state/` 都含明文凭据） |
+| **登录态单独放 `~/.reading-agent/`** | 不跟书产物混在一起（`state/` 含明文会话） |
 | **插图描述必须标注「非原文」** | 视觉模型转述若被当成原文引用，会破坏忠实性护栏 |
 | **OCR 原文保持纯净** | 注入插图块时**不写回** OCR 文件 —— 写回会把图注行替换掉，下次重跑时「图注模式」信号就消失了 |
 | **续跑锚点 = (chapter_index, 页内序号)** | 切章节时 URL 不变；分页随视口变化 → 不能靠 URL 或全局页码 |
@@ -219,5 +219,5 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 ## 8. 合规
 
 - 只处理用户**已购或有合法阅读权限**的书籍。
-- `state/`、`.env` 含明文凭据 → 已 gitignore，**不要提交**。
+- `state/` 含明文凭据 → 已 gitignore，**不要提交**。LLM 凭据走继承的环境变量，不落盘。
 - 产物不外传。

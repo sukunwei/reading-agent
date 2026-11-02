@@ -175,11 +175,36 @@ git clone https://github.com/sukunwei/reading-agent.git && cd reading-agent
 
 pip install -r requirements.txt
 swiftc -O utils/ocr.swift -o utils/bin/ocr   # OCR 引擎（macOS Vision）
-cp .env.example .env && $EDITOR .env     # 填 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+
+export ANTHROPIC_API_KEY=sk-ant-...        # 或 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
 ```
 
 > OCR 需要 **macOS**（Apple Vision）。其他平台把 `agent/ocr.py` 里的 OCR 调用换成
 > PaddleOCR / RapidOCR 即可，其余代码不变。
+
+### LLM 凭据从哪来
+
+**插件方式不需要任何配置文件。** 凭据、端点、模型全部由 Claude Code 注入环境变量
+（`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`），
+插件的 Python 进程直接继承，无需 `.env`。
+
+独立运行时自己 export 上面那几个变量即可。若确实想用文件覆盖，在插件/仓库根目录放个
+`.env`（走 `load_dotenv`，**环境变量优先级更高**），但不是必需的。
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `LLM_EFFORT` | `medium` | 思考深度：`low` / `medium` / `high` / `xhigh` / `max` |
+| `LLM_STRUCTURED_OUTPUT` | `auto` | 结构化输出：`native`（服务端强制 schema）/ `prompt`（提示词 + 本地校验）/ `auto`（先试 native，失败降级） |
+| `LLM_SUMMARY_MODEL` | 跟 `ANTHROPIC_MODEL` | 逐章总结用的模型 |
+| `LLM_REVIEW_MODEL` | 跟 `ANTHROPIC_MODEL` | 全书评测用的模型 |
+| `LLM_WORKERS` | `2` | 逐章总结并行度 |
+| `LLM_VISION_EFFORT` | `low` | 插图视觉识别的思考深度 |
+| `API_TIMEOUT_MS` | 不限 | 单次请求超时（毫秒） |
+| `MOCK` | 关 | `MOCK=1` 不调 API，用占位内容跑通全流程（验证管道用） |
+| `BOOK_URL` | 内置默认 | `capture/login.py` 打开的书籍地址（采集用 `--book-url` 传） |
+
+> ⚠️ 走第三方 Anthropic 兼容端点时，模型名必须是该端点提供的 —— 写死
+> `claude-opus-5-5` 会 404。`ANTHROPIC_MODEL` 留空时才会退回官方 Claude。
 
 ---
 
@@ -338,5 +363,5 @@ python3 agent/report.py --book <书名> --external                # 不内嵌 ec
 
 仅用于个人已购书籍的离线阅读辅助。
 
-- `state/` 含明文登录会话、`.env` 含 API 凭据 → **均已在 `.gitignore` 中，不要提交**
+- `state/` 含明文登录会话 → **已在 `.gitignore` 中，不要提交**（LLM 凭据走环境变量，不落盘）
 - 产物不外传

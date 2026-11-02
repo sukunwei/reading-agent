@@ -81,13 +81,16 @@ python3 "${CLAUDE_PLUGIN_ROOT}/capture/extract_chrome_cookies.py"
 
 ```bash
 pip install -r "${CLAUDE_PLUGIN_ROOT}/requirements.txt"     # 首次
-swiftc -O "${CLAUDE_PLUGIN_ROOT}/ocr.swift" -o "${CLAUDE_PLUGIN_ROOT}/bin/ocr"   # 首次
+swiftc -O "${CLAUDE_PLUGIN_ROOT}/utils/ocr.swift" -o "${CLAUDE_PLUGIN_ROOT}/utils/bin/ocr"   # 首次
 ```
 
 OCR 二进制不存在时 `agent/ocr.py` 会自动编译，可跳过这步。
 
-**LLM 凭据**：检查 `${READING_AGENT_HOME}/.env` 里有没有 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN`。
-没有 → 告诉用户可以在 `.env` 里填，或者用 `MOCK=1` 先跑通流程（用占位内容，不调 API）。
+**LLM 凭据**：**不需要配置文件** —— 插件的 Python 进程直接继承 Claude Code 注入的环境变量
+（`ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`，以及 `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`）。
+检查这两个变量是否存在于环境里；不存在 → 告诉用户可以 `export ANTHROPIC_API_KEY=...`，
+或者用 `MOCK=1` 先跑通流程（用占位内容，不调 API）。
+（`agent/llm.py` 也会读插件根目录的 `.env` 作为可选覆盖，但没有它也能正常跑。）
 
 ## Phase 4：采集整本
 
