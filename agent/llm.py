@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -105,13 +106,24 @@ def classify_exception(exc: BaseException) -> tuple[str, bool]:
 _FALLBACK_WARNED = False   # 进程级：降级提示只打一次
 
 
+def _resolve_usage_log() -> Path | None:
+    """台账路径：由环境变量指定（各阶段写同一个文件）。"""
+    v = os.environ.get("READING_AGENT_USAGE_LOG")
+    return Path(v).expanduser() if v else None
+
+
 def _mock_enabled() -> bool:
     return os.environ.get("MOCK", "").strip() in ("1", "true", "yes")
 
 
 class LLM:
     def __init__(self, client: Any = None, model: str | None = None,
-                 effort: str | None = None, mock: bool | None = None):
+                 effort: str | None = None, mock: bool | None = None,
+                 label: str = "", usage_log: Path | None = None):
+        # label: 这一组调用属于哪个阶段（summary / review / figure …）
+        # usage_log: 把每次调用的 token 追加到台账，供 HTML 报告统计
+        self.label = label or os.environ.get("LLM_LABEL", "")
+        self.usage_log = usage_log or _resolve_usage_log()
         self.model = model or _default_model()
         self.summary_model = os.environ.get("LLM_SUMMARY_MODEL") or self.model
         self.review_model = os.environ.get("LLM_REVIEW_MODEL") or self.model
@@ -314,6 +326,14 @@ class LLM:
                         f"模型未返回结构化结果（stop_reason={msg.stop_reason}）",
                         category="truncated" if msg.stop_reason == "max_tokens" else "schema_invalid",
                         retryable=True)
+                # 某些 Anthropic 兼容端点会回传**原始 dict** 而非校验后的模型
+                # （实测 MiniMax 端点偶发），统一在这里强制转成 schema 实例。
+                if isinstance(parsed, dict):
+                    parsed = schema.model_validate(parsed)
+                if not isinstance(parsed, schema):
+                    raise LLMCallError(
+                        f"结构化结果类型不符（{type(parsed).__name__}）",
+                        category="schema_invalid", retryable=True)
                 return parsed
             except Exception as e:
                 last_exc = e
@@ -414,6 +434,29 @@ class LLM:
             self.usage["calls"] += 1
             self.usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
             self.usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
+            snapshot = dict(self.usage)
+        self._append_ledger(snapshot, usage)
+
+    def _append_ledger(self, snapshot: dict, usage: Any) -> None:
+        """把本次调用的 token 追加到台账文件（跨节点/跨进程累计）。"""
+        if not self.usage_log:
+            return
+        try:
+            self.usage_log.parent.mkdir(parents=True, exist_ok=True)
+            row = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "label": self.label or "unknown",
+                "model": self.model,
+                "calls": snapshot.get("calls", 0),
+                "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+                "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+                "cache_read_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+                "cache_write_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            }
+            with self.usage_log.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     @staticmethod
     def _is_retryable(e: Exception) -> bool:

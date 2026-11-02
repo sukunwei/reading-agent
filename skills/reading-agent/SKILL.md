@@ -28,6 +28,7 @@ version: 0.1.0
                                           全书评测 nodes/review.py
                                                ↓
                                           渲染 chapter_summaries.md / book_review.md
+                                               └→ report.html（HTML 报告）
 ```
 
 **分工原则**：采集层全是确定性代码，不进 LLM；认知层才用模型。章节切分是**确定性节点**（目录 × 每页章节号），不用 LLM。
@@ -58,6 +59,7 @@ python3 capture/capture.py --book-url "<URL>" --out-dir "$OUT_DIR"   # 采集整
 python3 agent/ocr.py --out-dir "$OUT_DIR"      # 分页 OCR + 质量闸门
 python3 agent/cli.py <书名> --out-dir "$OUT_DIR"   # 认知层全链路
 python3 agent/cli.py --list --out-dir "$OUT_DIR"   # 列出已采集的书
+python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（可离线重建）
 ```
 
 不传 `--out-dir` 时默认 `$PWD/reading-output`；也可用 `READING_AGENT_OUT` 统一设置。

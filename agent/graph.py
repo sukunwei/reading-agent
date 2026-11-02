@@ -24,6 +24,7 @@ from .nodes.review import render_review_md, review_book
 from .nodes.split import load_book_context
 from .nodes.summary import summarize_chapters
 from .prompts import RENDER_CHAPTER_MD
+from .stages import Timer, export_usage_log, record_stage
 
 
 class BookState(TypedDict, total=False):
@@ -44,6 +45,12 @@ class BookState(TypedDict, total=False):
 
 # --------------------------------------------------------------------------- 节点
 
+def _llm(state: BookState, label: str) -> LLM:
+    """按阶段建 LLM 实例：带 label（token 台账按阶段归类）+ 共享台账文件。"""
+    export_usage_log(Path(state["state_dir"]))
+    return LLM(label=label)
+
+
 def node_figures(state: BookState) -> BookState:
     """插图分流（M8）：检测图表 → 视觉模型读图 → 记录到 figures.json。
 
@@ -55,7 +62,7 @@ def node_figures(state: BookState) -> BookState:
         state["figures"] = []
         return state
 
-    llm = LLM()
+    llm = _llm(state, "figure")
     res = process_book_figures(
         llm, book_dir, state_dir, describe=True,
         on_progress=lambda rec, st: print(
@@ -69,6 +76,24 @@ def node_load(state: BookState) -> BookState:
     book_dir = Path(state["book_dir"])
     state_dir = Path(state["state_dir"])
     chapters, pages, quality = load_book_context(book_dir, state_dir)
+
+    # 复用已有总结（支持单章重跑、重跑只补缺的）
+    ch_dir = book_dir / "chapters"
+    reused = 0
+    for ch in chapters:
+        f = ch_dir / f"{ch['index']:03d}.json"
+        if not f.exists():
+            continue
+        try:
+            d = json.loads(f.read_text("utf-8"))
+        except Exception:
+            continue
+        if d.get("summary"):
+            ch["summary"] = d["summary"]
+            ch["summary_done"] = True
+            reused += 1
+    if reused:
+        print(f"  ♻️  复用已有总结 {reused}/{len(chapters)} 章（--force-summary 可强制重跑）")
     state["chapters"] = chapters
     state["pages"] = pages
     state["quality"] = quality
@@ -79,7 +104,7 @@ def node_load(state: BookState) -> BookState:
 
 
 def node_summarize(state: BookState) -> BookState:
-    llm = LLM()
+    llm = _llm(state, "summary")
     chapters = state.get("chapters", [])
 
     def progress(ch: dict):
@@ -91,14 +116,16 @@ def node_summarize(state: BookState) -> BookState:
             msg = err.get("message", "") if isinstance(err, dict) else str(err)
             print(f"  ❌ {ch['title'][:30]:32s} {msg[:80]}")
 
+    import os
+    force = os.environ.get("READING_AGENT_FORCE_SUMMARY") == "1"
     state["chapters"] = summarize_chapters(llm, state["book_title"], chapters,
-                                            on_progress=progress)
+                                            skip_done=not force, on_progress=progress)
     return state
 
 
 def node_diagnose(state: BookState) -> BookState:
     """诊断 / 恢复节点：把能自动修的失败自己修好，修不好的才升级给人工闸门。"""
-    llm = LLM()
+    llm = _llm(state, "diagnose")
     chapters = state.get("chapters", [])
 
     def progress(ch: dict):
@@ -173,7 +200,7 @@ def node_gate(state: BookState) -> BookState:
 
 
 def node_review(state: BookState) -> BookState:
-    llm = LLM()
+    llm = _llm(state, "review")
     review = review_book(llm, state["book_title"], state.get("chapters", []),
                          state.get("quality", {}))
     state["review"] = review.model_dump()
@@ -235,6 +262,8 @@ def node_render(state: BookState) -> BookState:
         obj = BookReview.model_validate(rv)
         md = render_review_md(obj, state["book_title"], state.get("quality", {}))
         (book_dir / "book_review.md").write_text(md, "utf-8")
+        (book_dir / "book_review.json").write_text(
+            json.dumps(rv, ensure_ascii=False, indent=2), "utf-8")
         outputs["book_review.md"] = str(book_dir / "book_review.md")
 
         # 整合版
@@ -243,23 +272,44 @@ def node_render(state: BookState) -> BookState:
             + "\n\n---\n\n" + md, "utf-8")
         outputs["full_readnote.md"] = str(book_dir / "full_readnote.md")
 
+    # HTML 报告（失败不影响主流程）
+    try:
+        from .report import generate
+        rp = generate(book_dir, Path(state["state_dir"]), out_dir_root=Path(state["book_dir"]).parent)
+        outputs["report.html"] = str(rp)
+    except Exception as e:
+        print(f"  ⚠️ 报告生成失败（不影响主流程）：{e}")
+
     state["outputs"] = outputs
     return state
 
 
 # --------------------------------------------------------------------------- 图
 
+def _timed(name: str, fn):
+    """给节点套一层计时，把耗时写进 .state/stages.json。"""
+    def wrapped(state: BookState) -> BookState:
+        with Timer() as t:
+            out = fn(state)
+        state_dir = out.get("state_dir") or state.get("state_dir")
+        if state_dir:
+            record_stage(Path(state_dir), name, t.seconds)
+        return out
+    wrapped.__name__ = fn.__name__
+    return wrapped
+
+
 def build_graph(checkpointer=None):
     from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(BookState)
-    g.add_node("figures", node_figures)
-    g.add_node("load", node_load)
-    g.add_node("summarize", node_summarize)
-    g.add_node("diagnose", node_diagnose)
-    g.add_node("gate", node_gate)
-    g.add_node("review", node_review)
-    g.add_node("render", node_render)
+    g.add_node("figures", _timed("figures", node_figures))
+    g.add_node("load", _timed("load", node_load))
+    g.add_node("summarize", _timed("summarize", node_summarize))
+    g.add_node("diagnose", _timed("diagnose", node_diagnose))
+    g.add_node("gate", _timed("gate", node_gate))
+    g.add_node("review", _timed("review", node_review))
+    g.add_node("render", _timed("render", node_render))
 
     g.add_edge(START, "figures")
     g.add_edge("figures", "load")

@@ -37,7 +37,7 @@ from agent.nodes.summary import summarize_chapters
 
 load_dotenv(ROOT / ".env")
 
-STAGES = ("ocr", "split", "summary", "review", "render", "all")
+STAGES = ("ocr", "split", "summary", "review", "render", "report", "all")
 
 
 def pick_book(keyword: str) -> Path | None:
@@ -185,7 +185,8 @@ def main() -> int:
     ap.add_argument("--stage", default="all", choices=STAGES)
     ap.add_argument("--mock", action="store_true", help="离线模式，不调 API")
     ap.add_argument("--resume", action="store_true")
-    ap.add_argument("--force-summary", action="store_true")
+    ap.add_argument("--force-summary", action="store_true", help="重跑全部逐章总结")
+    ap.add_argument("--force-ocr", action="store_true", help="重跑全部 OCR")
     ap.add_argument("--model", default=None)
     ap.add_argument("--out-dir", default=None,
                     help="产物根目录（默认 $PWD/reading-output，可用 READING_AGENT_OUT 覆盖）")
@@ -213,11 +214,13 @@ def main() -> int:
 
     if args.mock:
         os.environ["MOCK"] = "1"
+    if args.force_summary:
+        os.environ["READING_AGENT_FORCE_SUMMARY"] = "1"
 
     # ---- P1 OCR ----
     if args.stage in ("ocr", "all"):
         print("\n=== [1/4] OCR ===")
-        rep = stage_ocr(book_dir, state_dir, force=args.force_summary)
+        rep = stage_ocr(book_dir, state_dir, force=args.force_ocr)
         if rep:
             print(f"  覆盖率 {rep['coverage']:.1%}  闸门 "
                   f"{'✅' if rep['gate_passed'] else '⚠️ ' + str(rep['gate'])}")
@@ -255,7 +258,13 @@ def main() -> int:
     outputs = stage_render(book_dir, chapters, quality, review)
     print("\n✅ 产物：")
     for k, v in outputs.items():
-        print(f"   · {k}  →  {Path(v).relative_to(ROOT)}")
+        print(f"   · {k}  →  {Path(v)}")
+
+    if args.stage in ("render", "all"):
+        from agent.report import main as report_main
+        print("\n=== HTML 报告 ===")
+        sys.argv = ["report", "--book", book_dir.name, "--out-dir", str(resolve_out_dir(args.out_dir))]
+        report_main()
     return 0
 
 

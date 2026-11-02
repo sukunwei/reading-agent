@@ -264,6 +264,34 @@ python3 capture/capture.py --resume --out-dir "$OUT_DIR"       # 采集续跑
 
 ---
 
+## HTML 报告
+
+流水线最后会生成一份自包含的 HTML 报告：`<OUT_DIR>/<书名>/report.html`
+
+```bash
+python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"      # 随时离线重建
+python3 agent/report.py --book <书名> --inline                 # 单文件（echarts 内嵌）
+```
+
+**报告包含 5 块**：
+
+| 块 | 内容 |
+|---|---|
+| ① 概览 | 评分/评级、章节数、页数、字数、OCR 覆盖率、插图数（耗时与 Token 在有埋点数据时才会出现） |
+| ② 五维评分 | CSS 条形 + ECharts 雷达图 |
+| ③ 全书评测 | 整体定位 + 五维依据全文 + 优势/短板/适合人群/阅读建议 |
+| ④ 逐章精读笔记全文 | 60 章完整精读笔记（可折叠展开） |
+| ⑤ 附录 | 环境信息、产物清单、数据来源说明 |
+
+**图表库本地化**：ECharts 首次使用时下载到 `<OUT_DIR>/assets/echarts.min.js`，
+报告用**相对路径**引用 → 不依赖 CDN，离线可开、可分享、可长期存档。
+（`--no-echarts` 可退回纯 CSS 条形。）
+
+**可离线重建**：报告只读既有产物与 `.state/` 里的埋点，**不重跑流水线** ——
+重跑一次要 1 小时，报告必须能单独重生成。
+
+---
+
 ## 关键设计
 
 | 决策 | 原因 |

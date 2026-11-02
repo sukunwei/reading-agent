@@ -335,6 +335,7 @@ def describe_figures_batch(llm: LLM, items: list[dict],
         model=model, max_tokens=16000, system=BATCH_VISION_SYSTEM,
         output_config={"effort": effort},
         messages=[{"role": "user", "content": content}])
+    llm._record(resp.usage)      # 批量视觉也要计入 token 台账
     raw = "".join(b.text for b in resp.content if b.type == "text")
     if not raw.strip():
         raise ValueError(f"批量视觉返回空（stop_reason={resp.stop_reason}）")

@@ -49,6 +49,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 from playwright.async_api import async_playwright
@@ -57,6 +58,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import contextlib
 
+from agent.stages import record_stage
 from paths import book_paths, resolve_auth_dir, resolve_out_dir
 
 DEFAULT_BOOK_URL = ("https://weread.qq.com/web/reader/"
@@ -229,6 +231,7 @@ async def flip_next(page) -> bool:
 # --------------------------------------------------------------------------- 主流程
 
 async def run(args) -> int:
+    _t_capture = time.perf_counter()
     state_path = Path(args.state)
     out_dir = resolve_out_dir(args.out_dir)
     if not state_path.is_absolute():
@@ -456,6 +459,8 @@ async def run(args) -> int:
         await browser.close()
 
     total = len(read_jsonl(pages_path))
+    record_stage(state_dir, "capture", time.perf_counter() - _t_capture,
+                 pages=captured, total_pages=total)
     print(f"\n✅ 采集完成：本次 {captured} 页，累计 {total} 页")
     print(f"   截图: {shots_dir}")
     print(f"   索引: {pages_path}")

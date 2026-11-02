@@ -133,6 +133,15 @@ python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" "<书名关键字>" --out-dir "<OUT
 - 失败时自动诊断并恢复，仍失败才中断等人工确认
 - 汇总全书五维评分与专业书评
 
+## Phase 6.5：HTML 报告
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/agent/report.py" --book "<书名>" --out-dir "<OUT_DIR>"
+```
+
+产出 `<OUT_DIR>/<书名>/report.html` —— 含各阶段耗时、token 消耗、诊断报告、
+逐章一览、插图清单、全书评测与 60 章笔记全文。图表库已下载到本地，离线可开。
+
 ## Phase 7：交付
 
 把产物路径告诉用户，并**简要汇报**：
@@ -144,6 +153,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/agent/cli.py" "<书名关键字>" --out-dir "<OUT
 | 整合版读书资产 | `<OUT_DIR>/<书名>/full_readnote.md` |
 | 诊断报告 | `<OUT_DIR>/<书名>/diagnosis.md` |
 | 清洗后全文 | `<OUT_DIR>/<书名>/full_text.txt` |
+| **HTML 报告** | `<OUT_DIR>/<书名>/report.html` |
 | 逐页截图 | `<OUT_DIR>/<书名>/screenshots/` |
 | 分页 OCR | `<OUT_DIR>/<书名>/ocr_pages/` |
 | 续跑状态 | `<OUT_DIR>/<书名>/.state/` |

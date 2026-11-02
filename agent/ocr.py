@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import contextlib
 
+from agent.stages import record_stage
 from paths import book_paths, list_books, resolve_out_dir
 
 OCR_SRC = ROOT / "ocr.swift"
@@ -102,6 +103,7 @@ def process_book(book_dir: Path, state_dir: Path, binary: Path,
     index_rows: list[dict] = []
     done = 0
     t0 = __import__("time").time()
+    _t_start = t0
 
     for start in range(0, len(todo), batch):
         chunk = todo[start:start + batch]
@@ -252,6 +254,8 @@ def process_book(book_dir: Path, state_dir: Path, binary: Path,
         },
     }
     report["gate_passed"] = all(report["gate"].values())
+    record_stage(state_dir, "ocr", __import__("time").time() - _t_start,
+                 pages=len(pages), covered=covered, coverage=round(coverage, 4))
     (book_dir / "quality_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), "utf-8")
     (ocr_root / "_ocr_index.jsonl").write_text(
