@@ -307,6 +307,33 @@ utils/               非 Python 的工具：ocr.swift（OCR 引擎，macOS Visio
 └── full_text.txt                          清洗后全文
 ```
 
+
+```mermaid
+flowchart LR
+    User([使用者 User]) --> RouterAgent
+
+    subgraph Orchestrator ["協調與路由層"]
+        RouterAgent["🤖 路由 Agent (Manager)<br/>- 分析需求、拆解任務、分發指令"]
+    end
+
+    subgraph AgentPool ["專門智能體池 (Specialized Agents)"]
+        CoderAgent["💻 程式碼 Agent<br/>- 撰寫與除錯"]
+        ReviewerAgent["🔍 審查 Agent<br/>- 代碼安全與邏輯檢查"]
+        DocAgent["✍️ 文檔 Agent<br/>- 生成 API 說明書"]
+    end
+
+    subgraph SharedEnv ["共享基礎設施"]
+        GitRepo[(GitHub 倉庫)]
+        VectDB[(共用知識庫 RAG)]
+    end
+
+    %% 協同關係
+    RouterAgent <--> CoderAgent & ReviewerAgent & DocAgent
+    CoderAgent & ReviewerAgent --> GitRepo
+    DocAgent --> VectDB
+
+```
+
 ---
 
 ## HTML 报告
