@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import TypedDict
@@ -26,6 +27,11 @@ from .nodes.review import render_review_md, review_book
 from .nodes.split import load_book_context
 from .nodes.summary import summarize_chapters
 from .prompts import RENDER_CHAPTER_MD
+
+
+def _text_sha1(text: str) -> str:
+    """章节正文的指纹 —— 用来判断已存的摘要是否过期。"""
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
 
 
 class BookState(TypedDict, total=False):
@@ -89,8 +95,16 @@ def node_load(state: BookState) -> BookState:
             d = json.loads(f.read_text("utf-8"))
         except Exception:
             continue
-        if d.get("summary"):
-            ch["summary"] = d["summary"]
+        s = d.get("summary") or {}
+        # ⚠️ 空摘要不算「已完成」——当初因章节未采集而生成的空摘
+        #    （core_thesis 为空）会被永久复用，续采补齐页面后也不再重跑。
+        if s and (s.get("core_thesis") or "").strip():
+            # ⚠️ 正文变了（续采补页 / 重新 OCR / 补齐插图描述）→ 旧摘要已过期
+            old_hash = d.get("text_sha1")
+            if old_hash and old_hash != _text_sha1(ch.get("text") or ""):
+                print(f"  ♻️  第{ch['index']}章正文已变 → 旧摘要作废，重跑")
+                continue
+            ch["summary"] = s
             ch["summary_done"] = True
             reused += 1
     if reused:
@@ -225,6 +239,8 @@ def node_render(state: BookState) -> BookState:
         (ch_dir / f"{ch['index']:03d}.json").write_text(
             json.dumps({"index": ch["index"], "title": ch["title"],
                         "start_page": ch["start_page"], "end_page": ch["end_page"],
+                        # 正文指纹 —— 下次复用摘要时用它判断摘要是否已过期
+                        "text_sha1": _text_sha1(ch.get("text") or ""),
                         "summary": s}, ensure_ascii=False, indent=2), "utf-8")
         md = RENDER_CHAPTER_MD.format(
             title=ch["title"], index=ch["index"], level=ch["level"],

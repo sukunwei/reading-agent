@@ -64,7 +64,9 @@ def summarize_chapters(llm: LLM, book_title: str, chapters: list[dict],
         try:
             s = summarize_chapter(llm, book_title, ch, model=model)
             ch["summary"] = s.model_dump()
-            ch["summary_done"] = True
+            # ⚠️ 正文为空的章节不算「总结完成」——
+            #    标成完成会让续采补齐页面后仍被跳过，永久留空。
+            ch["summary_done"] = bool((ch.get("text") or "").strip())
             ch["summary_error"] = None
         except Exception as e:
             ch["summary_done"] = False
