@@ -172,7 +172,14 @@ def run_graph(book_dir: Path, state_dir: Path, llm: LLM, resume: bool) -> int:
     outputs = (result or {}).get("outputs", {})
     print("\n✅ 产物：")
     for k, v in outputs.items():
-        print(f"   · {k}  →  {Path(v).relative_to(ROOT)}")
+        p = Path(v)
+        try:
+            shown = p.relative_to(ROOT)
+        except ValueError:
+            # 产物目录在插件之外（--out-dir 指定）→ 直接显示绝对路径，
+            # 否则 relative_to 会抛 ValueError 让整个 run 在收尾时崩掉
+            shown = p
+        print(f"   · {k}  →  {shown}")
     return 0
 
 
