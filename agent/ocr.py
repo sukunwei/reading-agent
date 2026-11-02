@@ -220,11 +220,16 @@ def process_book(book_dir: Path, state_dir: Path, binary: Path,
             print(f"  ▸ {done}/{len(todo)} 页  [{el:.0f}s, {el/max(1,done):.1f}s/页]")
 
     # ---- 质量报告 ----
-    all_rows = index_rows
-    if not all_rows:                      # 增量：读回既有索引
-        idx = ocr_root / "_ocr_index.jsonl"
-        if idx.exists():
-            all_rows = read_jsonl(idx)
+    # ⚠️ 增量时**必须与既有索引合并**，不能只留本次跑的：
+    #    只留 index_rows 会把已识别页从统计里抹掉（覆盖率虚低），
+    #    且下面回写 _ocr_index.jsonl 时会把历史行整体丢掉。
+    all_rows = list(index_rows)
+    idx = ocr_root / "_ocr_index.jsonl"
+    if idx.exists():
+        have = {(r.get("page_no"), r.get("col")) for r in all_rows}
+        for r in read_jsonl(idx):
+            if (r.get("page_no"), r.get("col")) not in have:
+                all_rows.append(r)
 
     total_chars = sum(r["chars"] for r in all_rows)
     low_conf = [r for r in all_rows if r["mean_conf"] < 0.9 or r["low_conf_ratio"] > 0.3]
