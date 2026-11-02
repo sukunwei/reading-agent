@@ -255,7 +255,8 @@ python3 capture/capture.py --resume --out-dir "$OUT_DIR"       # 采集续跑
   ├── tooling/
   └── testing/
 commands/            /read-book 命令
-CLAUDE.md            项目操作记忆（硬约束 / 角色定义 / 排查表）
+CLAUDE.md            项目操作记忆（硬约束 / 角色定义 / 目录结构 / 产物）
+docs/                 方案评审与实测依据
 capture/             采集层（Playwright）
 agent/               认知层（LangGraph）+ report.py
 shared/              两层共用：paths.py（路径解析）+ stages.py（计时/token 台账）

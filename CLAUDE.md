@@ -30,7 +30,7 @@ figures → load → summarize → diagnose → gate(HITL) → review → render
 pip install -r requirements.txt
 swiftc -O ocr.swift -o bin/ocr                 # OCR 引擎（macOS Vision）
 
-export OUT_DIR="$HOME/Documents/读书"             # 产物目录由用户指定
+export OUT_DIR="$HOME/Documents/readbook"             # 产物目录由用户指定
 python3 capture/login.py                          # 有头浏览器扫码登录（→ ~/.reading-agent/）
 python3 capture/capture.py --book-url "<URL>" --out-dir "$OUT_DIR"
 python3 agent/ocr.py       --out-dir "$OUT_DIR"
@@ -84,7 +84,7 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 | **并行前必须先 `warmup()`** | 多个 worker 同时去试那个会挂起的原生路径 → 并行反而比串行慢。实测 8 章：串行 34.0s/章 vs 并行 14.1s/章（2.4×） |
 | **批量视觉 `max_tokens` 必须给 16000** | 多图时模型先思考，给 4000 会 `stop_reason=max_tokens` 而**一个字都吐不出来**。6 图/批 ≈ 2.6s/张（单图 38s） |
 | 解析模型输出用 **`raw_decode()`** | 模型偶尔输出「示例 JSON + 正式 JSON」两段，`find('{')..rfind('}')` 会报 "Extra data" |
-| 原生路径返回 **dict** 时要转成 schema 实例 | 实测该端点偶发返回原始 dict → `'dict' object has no attribute 'model_dump'` |
+| 原生路径返回 **dict** 时要转成 schema 实例 | 实测该端点偶发返回原始 dict → `'dict' object has no attribute 'model_dump'`。⚠️ 该兜底修复**尚未在真实运行中验证过**，若仍报错把日志给我 |
 
 ### 3.4 分层与依赖
 
@@ -163,34 +163,10 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 
 ---
 
-## 5. 当前进度
-
-| # | 里程碑 | 产出物 | 状态 |
-|---|---|---|---|
-| M0 | 登录态就绪 | `~/.reading-agent/storage_state.json` | ✅ |
-| M1 | OCR 引擎优化 | `utils/ocr.swift`（12 项改动，回归通过） | ✅ |
-| M2 | 采集层跑通 | `capture/capture.py`（1280×815 整页，不含 header） | ✅ 已验证 |
-| M3 | 全书 OCR + 质量报告 | `agent/ocr.py` → `ocr_pages/` + `quality_report.json` | ✅ |
-| M4 | 清洗 + 切分 + 逐章总结 | `agent/nodes/` + `chapters/*.json` + `chapter_summaries.md` | ✅ 离线验证 |
-| M5 | 全书评测 | `book_review.md` + `full_readnote.md` | ✅ 离线验证 |
-| M6 | 端到端 CLI + 续跑 + HITL | `agent/cli.py` + SQLite checkpoint | ✅ |
-| M7 | 接入真实 API | `.env`（从 `~/.claude/settings.json` 提取） | ✅ |
-| M8 | 插图分流 | `agent/figures.py`（双信号判定 + 视觉读图 + 内联正文） | ✅ |
-| M9 | 打包为 Claude Code 插件 | `.claude-plugin/` + `/read-book` + skill | ✅ |
-
-**已跑通**：时势 225 页 / 15 章 / 102 张图 → 逐章 60/60 成功 → 评测 7.4~7.7 分 → HTML 报告。
-
-**待办**
-- 跑第二本书验证泛化（本书是 102 图 15 章的硬样本）
-- 插件真机实测（需重开 Claude Code 会话才会加载 marketplace 插件）
-- `agent/llm.py` 的 dict 兜底修复**未做重跑验证**（下次真实运行若仍报
-  `'dict' object has no attribute 'model_dump'`，把日志给我）
-
----
-
-## 6. 目录结构
+## 5. 目录结构
 
 ```
+docs/                方案评审与实测依据
 .claude-plugin/       插件清单（plugin.json + marketplace.json）
 .claude/skills/       项目级 skill（reading-agent + python-best-practices 三件套）
 commands/            /read-book 命令
@@ -216,7 +192,7 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 
 ---
 
-## 7. 产物
+## 6. 产物
 
 ```
 <OUT_DIR>/<书名>/
@@ -233,30 +209,14 @@ utils/ocr.swift      OCR 引擎（macOS Vision）→ 编译为 utils/bin/ocr，�
 
 ---
 
-## 8. 排查表
-
-| 现象 | 处理 |
-|---|---|
-| 正文左右被切字 | 检查 `device_scale_factor` 是不是 1 |
-| 一直停在第一页 | 检查是否被试读/会员限制；检查登录态是否过期 |
-| 「连续内容不变」停止 | 书尾正常结束；否则视口指纹被改过 |
-| OCR 文本里混进「上一页/下一页」 | 裁栏时没排除 pager 行 → 重跑 `agent/ocr.py --force-ocr` |
-| 章节是空的 | 该章未采集到 → `capture/capture.py --resume` 补采 |
-| 章节切错位置 | 章节→页区间映射用了视口相关布局 → 检查视口是否被改 |
-| 结构化输出报错 | 端点不强制 JSON → 已自动降级；仍失败设 `LLM_STRUCTURED_OUTPUT=prompt` |
-| 找不到已采集的书 | `--out-dir` 指错了 —— 三个命令必须用同一个 |
-| 图表没被识别 | 看 `figures/figures.json` 的 `verdict` 字段（`both` / `caption_only` / `box_only`） |
-
----
-
-## 9. 工具链
+## 7. 工具链
 
 `pyproject.toml` 固化了 ruff（E/F/W/I/UP/B/SIM/PTH/RUF）、mypy、pytest 配置。
 `ruff check .` 必须全绿。中文全角标点按 RUF001/002/003 忽略（中文项目本该用全角）。
 
 ---
 
-## 10. 合规
+## 8. 合规
 
 - 只处理用户**已购或有合法阅读权限**的书籍。
 - `state/`、`.env` 含明文凭据 → 已 gitignore，**不要提交**。
