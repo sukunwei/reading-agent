@@ -44,8 +44,13 @@ load_dotenv(ROOT / ".env")
 STAGES = ("ocr", "split", "summary", "review", "render", "report", "all")
 
 
-def pick_book(keyword: str) -> Path | None:
-    for b in list_books(resolve_out_dir()):
+def pick_book(keyword: str, out_dir: Path | None = None) -> Path | None:
+    """按书名关键字找书。
+
+    ⚠️ 必须用**同一个** out_dir 去找 —— 之前这里重新 resolve_out_dir()，
+    把 --out-dir 丢掉了 → 书在插件目录之外时永远报「找不到」。
+    """
+    for b in list_books(out_dir or resolve_out_dir()):
         if keyword in b.name:
             return b
     return None
@@ -107,6 +112,7 @@ def run_graph(book_dir: Path, state_dir: Path, llm: LLM, resume: bool) -> int:
 
     from agent.graph import (
         BookState,
+        _timed,
         make_checkpointer,
         node_diagnose,
         node_figures,
@@ -120,14 +126,16 @@ def run_graph(book_dir: Path, state_dir: Path, llm: LLM, resume: bool) -> int:
     db = book_dir / ".state" / f"{book_dir.name}.ckpt.sqlite"
     saver = make_checkpointer(db)
 
+    # ⚠️ 节点必须套 _timed —— 否则 stages.json 里没有认知层的耗时，
+    #    HTML 报告的「总耗时」只统计到采集/OCR，会严重低估。
     g = StateGraph(BookState)
-    g.add_node("figures", node_figures)
-    g.add_node("load", node_load)
-    g.add_node("summarize", node_summarize)
-    g.add_node("diagnose", node_diagnose)
-    g.add_node("gate", node_gate)
-    g.add_node("review", node_review)
-    g.add_node("render", node_render)
+    g.add_node("figures", _timed("figures", node_figures))
+    g.add_node("load", _timed("load", node_load))
+    g.add_node("summarize", _timed("summarize", node_summarize))
+    g.add_node("diagnose", _timed("diagnose", node_diagnose))
+    g.add_node("gate", _timed("gate", node_gate))
+    g.add_node("review", _timed("review", node_review))
+    g.add_node("render", _timed("render", node_render))
     g.add_edge("__start__", "figures")
     g.add_edge("figures", "load")
     g.add_edge("load", "summarize")
@@ -217,7 +225,7 @@ def main() -> int:
             print(f"  · {b.name}  ({n} 页)")
         return 0
 
-    book_dir = pick_book(args.book)
+    book_dir = pick_book(args.book, resolve_out_dir(args.out_dir))
     if not book_dir:
         print(f"❌ 找不到包含「{args.book}」的书。用 --list 看看有哪些。")
         return 1

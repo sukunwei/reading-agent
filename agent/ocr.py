@@ -31,6 +31,7 @@ import json
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -42,7 +43,7 @@ sys.path.insert(0, str(ROOT))
 import contextlib
 
 from shared.paths import book_paths, list_books, resolve_out_dir
-from shared.stages import record_stage
+from shared.stages import load_stages, record_stage
 
 OCR_SRC = ROOT / "utils" / "ocr.swift"
 BIN_DIR = ROOT / "utils" / "bin"
@@ -259,8 +260,19 @@ def process_book(book_dir: Path, state_dir: Path, binary: Path,
         },
     }
     report["gate_passed"] = all(report["gate"].values())
-    record_stage(state_dir, "ocr", __import__("time").time() - _t_start,
-                 pages=len(pages), covered=covered, coverage=round(coverage, 4))
+    # ⚠️ 空跑（这轮一页都没识别）**不要覆盖**已有的耗时记录 ——
+    #    否则「重跑一次」就把之前那 11 分钟的真实 OCR 耗时抹成 0.01 秒，
+    #    HTML 报告的阶段耗时表跟着失真。
+    if todo:
+        record_stage(state_dir, "ocr", __import__("time").time() - _t_start,
+                     pages=len(pages), covered=covered, coverage=round(coverage, 4))
+    else:
+        _prev = load_stages(state_dir).get("ocr")
+        if _prev:
+            _prev = dict(_prev)
+            _prev["rerun_at"] = datetime.now().isoformat(timespec="seconds")
+            record_stage(state_dir, "ocr", _prev.get("seconds", 0),
+                         **{k: v for k, v in _prev.items() if k != "seconds"})
     (book_dir / "quality_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), "utf-8")
     (ocr_root / "_ocr_index.jsonl").write_text(

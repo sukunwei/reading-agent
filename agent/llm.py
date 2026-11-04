@@ -232,6 +232,15 @@ class LLM:
                     msg = stream.get_final_message()
                 self._record(msg.usage)
                 if msg.parsed is not None:
+                    # ⚠️ 某些 Anthropic 兼容端点（实测 MiniMax）会回传**原始 dict**
+                    #    而非校验后的模型 —— 直接返回会在调用方 .model_dump() 时炸
+                    #    "'dict' object has no attribute 'model_dump'"。
+                    if isinstance(msg.parsed, dict):
+                        msg.parsed = schema.model_validate(msg.parsed)
+                    if not isinstance(msg.parsed, schema):
+                        raise LLMCallError(
+                            f"结构化结果类型不符（{type(msg.parsed).__name__}）",
+                            category="schema_invalid", retryable=True)
                     return msg.parsed
                 raise LLMCallError("未返回结构化结果",
                                    category="schema_invalid", retryable=True)

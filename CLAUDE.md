@@ -82,11 +82,22 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 | **降级一次后要记住，别再试原生** | 该端点的原生路径会**挂起数分钟**（`API_TIMEOUT_MS=3000000` = 50 分钟超时） |
 | **默认模型不写死 `claude-opus-5-5`** | 走第三方端点时该模型不存在 → 404。顺序：`LLM_MODEL` → `ANTHROPIC_MODEL` → 官方默认 |
 | **并行前必须先 `warmup()`** | 多个 worker 同时去试那个会挂起的原生路径 → 并行反而比串行慢。实测 8 章：串行 34.0s/章 vs 并行 14.1s/章（2.4×） |
-| **批量视觉 `max_tokens` 必须给 16000** | 多图时模型先思考，给 4000 会 `stop_reason=max_tokens` 而**一个字都吐不出来**。6 图/批 ≈ 2.6s/张（单图 38s） |
+| **批量视觉 `max_tokens` 必须给 16000** | 多图时模型先思考，给 4000 会 `stop_reason=max_tokens` 而**一个字都吐不出来**。6 图/批 ≈ 5.6s/张（串行）；**4 worker 并行 ≈ 1.2s/张**（实测 24 张：27.8s） |
 | 解析模型输出用 **`raw_decode()`** | 模型偶尔输出「示例 JSON + 正式 JSON」两段，`find('{')..rfind('}')` 会报 "Extra data" |
-| 原生路径返回 **dict** 时要转成 schema 实例 | 实测该端点偶发返回原始 dict → `'dict' object has no attribute 'model_dump'`。⚠️ 该兜底修复**尚未在真实运行中验证过**，若仍报错把日志给我 |
+| 原生路径返回 **dict** 时要转成 schema 实例 | 实测该端点偶发返回原始 dict → `'dict' object has no attribute 'model_dump'`。`_structured_native` **和 `structured_vision` 的原生分支**都要转（后者曾漏掉 → 视觉识别全军覆没） |
+| **视觉调用要单独限超时** | 客户端默认超时 = `API_TIMEOUT_MS`（全局 3000000ms = 50 分钟）→ 一次挂起能把 worker 卡死 50 分钟。视觉批次单独给 300s（`LLM_VISION_TIMEOUT`） |
+| **提示词模式的失败重试不写台账** | `_record` 只在拿到响应后调用 → schema 校验失败的重试**在 usage.jsonl 里完全看不见**。台账「没动静」不等于「没在跑」 |
 
-### 3.4 分层与依赖
+### 3.4 插图层
+
+| 约束 | 原因 |
+|---|---|
+| **批量视觉必须用绝对路径** | `rec["crop"]` 存的是**相对 book_dir** 的路径（JSON 里好看），而读文件是按**进程 cwd** 解析的 → 在别处跑 CLI 时每批都 `FileNotFoundError` → 静默退化成单图调用（479 张图 = 414 次调用，56 分钟） |
+| **视觉结果每批增量落盘** | 以前 `figures.json` 只在全部跑完才写 → 中途被掐，几十次视觉调用全白费。现在每批写一次（原子替换） |
+| **缓存只复用成功的描述** | 把 `error` 也当缓存 → 一次失败被永久缓存，那张图永远没有描述。失败必须重试 |
+| **图号列是「无插图页」的正常产物** | `verdict=box_only` + 无图注 = 深色块误判或纯装饰图，进度行显示 `None None` 属正常 |
+
+### 3.5 分层与依赖
 
 | 约束 | 原因 |
 |---|---|
@@ -94,11 +105,14 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 | 两层共用的东西放 `shared/` | `paths.py`（路径解析）、`stages.py`（计时与 token 台账）都被两层用到 |
 | 反过来 `agent/` → `capture/` 允许 | 认知层要用采集层的能力（OCR、图表识别） |
 
-### 3.5 流程层
+### 3.6 流程层
 
 | 约束 | 原因 |
 |---|---|
 | **产物目录由用户指定** | 不在 agent / plugin 目录里创建输出。`--out-dir` > `READING_AGENT_OUT` > `$PWD/reading-output` |
+| **找书和产物必须用同一个 out_dir** | `pick_book()` 曾自己重新 `resolve_out_dir()` → 把 `--out-dir` 丢了 → 书在插件目录之外时永远报「找不到」 |
+| **认知层节点必须套 `_timed()`** | 否则 `stages.json` 里没有认知层耗时 → HTML 报告的「总耗时」只统计到采集/OCR，严重低估 |
+| **CLI 跑 LangGraph 要自己拼图** | `cli.py` 的 `run_graph` 没用 `graph.build_graph()` → 曾经连 `_timed` 一起漏掉 |
 | **登录态单独放 `~/.reading-agent/`** | 不跟书产物混在一起（`state/` 含明文会话） |
 | **插图描述必须标注「非原文」** | 视觉模型转述若被当成原文引用，会破坏忠实性护栏 |
 | **OCR 原文保持纯净** | 注入插图块时**不写回** OCR 文件 —— 写回会把图注行替换掉，下次重跑时「图注模式」信号就消失了 |

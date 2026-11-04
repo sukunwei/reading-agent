@@ -244,6 +244,47 @@ async def flip_next(page) -> bool:
     }""")
 
 
+async def open_catalog(page) -> bool:
+    """打开目录面板，返回面板是否真的可见。
+
+    ⚠️ 点一下按钮不算数：某些 URL 形态（如带 #outline 片段）下点击会被
+    吞掉，面板仍不可见 —— 后面 scroll_into_view 就会在 display:none 的
+    元素上抛超时。所以这里点完必须**回读面板可见性**，不行就换方式再试。
+    """
+    async def visible() -> bool:
+        return await page.evaluate("""() => {
+          const p = document.querySelector('.readerCatalog');
+          if (!p) return false;
+          const r = p.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        }""")
+
+    if await visible():
+        return True
+
+    for sel in ("button.readerControls_item.catalog", ".readerControls_item.catalog"):
+        for force in (False, True):
+            try:
+                await page.click(sel, timeout=8000, force=force)
+            except Exception:
+                continue
+            await page.wait_for_timeout(1500)
+            if await visible():
+                return True
+
+    # 兜底：JS 派发点击（目录按钮本身没有「必须真实指针」的约束）
+    with contextlib.suppress(Exception):
+        await page.evaluate("""() => {
+          const b = document.querySelector('button.readerControls_item.catalog')
+                 || document.querySelector('.readerControls_item.catalog');
+          if (b) b.click();
+        }""")
+        await page.wait_for_timeout(1500)
+        if await visible():
+            return True
+    return False
+
+
 async def jump_to_toc(page, title: str, wait_ms: int = 5000) -> bool:
     """点目录里的指定条目跳转。
 
@@ -251,29 +292,28 @@ async def jump_to_toc(page, title: str, wait_ms: int = 5000) -> bool:
     阅读器把目录条目的跳转挂在真实指针事件上，脚本派发的 click 不会生效
     （实测 el.click() 点了也不跳，而真实点击能跳）。
     """
-    # 目录面板必须是打开且可见的
-    opened = await page.evaluate("""() => {
-      const p = document.querySelector('.readerCatalog');
-      if (!p) return false;
-      const r = p.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    }""")
-    if not opened:
-        with contextlib.suppress(Exception):
-            await page.click("button.readerControls_item.catalog", timeout=10000)
-        await page.wait_for_timeout(1500)
+    if not await open_catalog(page):
+        print("  ⚠️ 目录面板打不开")
+        return False
 
+    # innerText 可能带 '+书签' 等后缀，用「首行完全相等」匹配
     idx = await page.evaluate("""(t) => {
       const els = [...document.querySelectorAll('.readerCatalog_list_item')];
-      return els.findIndex(e => (e.innerText || '').trim() === t);
+      const head = e => (e.innerText || '').trim().split('\\n')[0].trim();
+      let i = els.findIndex(e => head(e) === t);
+      if (i < 0) i = els.findIndex(e => head(e).startsWith(t));
+      return i;
     }""", title)
     if idx < 0:
         print(f"  ⚠️ 目录里找不到条目「{title}」")
         return False
     try:
         loc = page.locator(".readerCatalog_list_item").nth(idx)
-        await loc.scroll_into_view_if_needed(timeout=8000)
-        await loc.click(timeout=10000)
+        try:
+            await loc.scroll_into_view_if_needed(timeout=8000)
+        except Exception:
+            pass  # 面板开着但条目在滚动区外，force 点击照样能打中
+        await loc.click(timeout=10000, force=True)
     except Exception as e:
         print(f"  ⚠️ 目录跳转「{title}」失败：{str(e)[:120]}")
         return False
@@ -322,6 +362,13 @@ async def run(args) -> int:
         return 1
 
     book_url = args.book_url or DEFAULT_BOOK_URL
+    # ⚠️ 必须去掉 URL 片段（#outline?noScroll=1 之类）。
+    # 带片段时 reader 会进入坏状态：卡在「书籍详情」页、目录面板打不开、
+    # 「下一页」点了也不推进（canvas 内容恒定 → 被判成书尾 → 只采到 1 页就停）。
+    clean_url = book_url.split("#")[0]
+    if clean_url != book_url:
+        print(f"  ↪ 去掉 URL 片段：{book_url} → {clean_url}")
+        book_url = clean_url
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -384,15 +431,21 @@ async def run(args) -> int:
         # ⚠️ 必须在目录面板「真实打开」时用真实点击跳转（见 jump_to_toc）。
         start_title = args.start_at or (toc[0]["title"] if toc else None)
         if start_title:
-            jumped = False
+            landed = False
             for attempt in range(3):
                 jumped = await jump_to_toc(page, start_title)
                 if jumped:
                     await page.wait_for_timeout(1500)
-                    print(f"  起点「{start_title}」→ 当前章节 {await read_chapter_title(page)!r}")
-                    break
+                    now = await read_chapter_title(page)
+                    print(f"  起点「{start_title}」→ 当前章节 {now!r}")
+                    # 点了不等于跳到了：还得确认真的落在目标章节上
+                    if now and (now == start_title or now.startswith(start_title)
+                                or start_title.startswith(now)):
+                        landed = True
+                        break
+                    print(f"  ↻ 跳到了但章节不对（第 {attempt+1} 次），重试")
                 await page.wait_for_timeout(2000)
-            if not jumped:
+            if not landed:
                 print(f"  ⚠️ 没能跳到目录条目「{start_title}」，按当前位置继续")
 
         # 隐藏 chrome（目录面板点按钮关不掉，只能 CSS 隐藏）
@@ -497,12 +550,22 @@ async def run(args) -> int:
             if prev_sig and sig == prev_sig:
                 # 内容没变有两种可能：① 到书尾了 ② 阅读器还在加载下一屏。
                 # ②更常见（翻页比渲染快），所以先多等一会儿再判定，别急着当书尾。
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(6000)
                 sig2 = await page.evaluate(JS_CONTENT_SIG)
                 if sig2 != prev_sig:
                     prev_sig = sig2
                     stuck = 0
                     continue
+                # 「下一页」按钮消失 = 真的到书尾了；按钮还在但内容不变 = 翻页失效。
+                has_next = await page.evaluate("""() => {
+                  const b = document.querySelector('.renderTarget_pager_button_right');
+                  if (!b) return false;
+                  const r = b.getBoundingClientRect();
+                  return r.width > 0 && r.height > 0;
+                }""")
+                if not has_next:
+                    print("  ⛔ 已到书尾（下一页按钮消失），停止")
+                    break
                 stuck += 1
                 if stuck >= args.max_stuck:
                     print("  ⛔ 连续内容不变（书尾或翻页失效），停止")

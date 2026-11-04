@@ -30,6 +30,8 @@ import base64
 import json
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -346,7 +348,10 @@ def describe_figures_batch(llm: LLM, items: list[dict],
     resp = llm.client.messages.create(
         model=model, max_tokens=16000, system=BATCH_VISION_SYSTEM,
         output_config={"effort": effort},
-        messages=[{"role": "user", "content": content}])
+        messages=[{"role": "user", "content": content}],
+        # ⚠️ 客户端默认超时 = API_TIMEOUT_MS（全局配置里是 3000000ms = 50 分钟）。
+        #    视觉批次挂起时会把一个 worker 卡住 50 分钟 → 这里单独限死。
+        timeout=float(os.environ.get("LLM_VISION_TIMEOUT", "300")))
     llm._record(resp.usage)      # 批量视觉也要计入 token 台账
     raw = "".join(b.text for b in resp.content if b.type == "text")
     if not raw.strip():
@@ -369,16 +374,22 @@ def describe_figures_batch(llm: LLM, items: list[dict],
 def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
                          describe: bool = True, model: str | None = None,
                          batch_size: int = 6, on_progress=None,
-                         force: bool = False) -> dict:
+                         force: bool = False, workers: int | None = None) -> dict:
     """全本插图扫描：检测 → 剔除坐标轴噪声 → 批量视觉描述。
 
-    视觉调用走**批量**（默认 6 图/批）：实测 6 图/批 ≈ 2.6s/图，
-    单图要 38s/张 —— 整本 100 张图从 65 分钟降到 5 分钟。
+    视觉调用走**批量**（默认 6 图/批）：实测 6 图/批 ≈ 5.6s/图（串行），
+    4 个 worker 并行 ≈ 1.2s/图 —— 整本 300 张图从 40 分钟降到 6 分钟。
+
+    ⚠️ 视觉结果**每批落盘一次**（figures.json 增量写）：
+       以前只在全部跑完才写，中途被掐 → 几十次视觉调用全部白费。
     """
     shots_root = book_dir / "screenshots"
     ocr_root = book_dir / "ocr_pages"
     if not shots_root.exists():
         return {"figures": [], "stats": {}}
+
+    if workers is None:
+        workers = int(os.environ.get("LLM_FIGURE_WORKERS", "4"))
 
     pngs = sorted(shots_root.glob("*/page_*.png"))
     out_dir = book_dir / "figures"
@@ -438,17 +449,14 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
             all_figs.append(rec)
 
             # 命中缓存 → 复用已有视觉结果，不裁图、不调视觉模型
+            # ⚠️ 只复用**成功**的结果：上一次失败（error）要重试，
+            #    否则一次失败会被永久缓存 → 这张图永远没有描述。
             hit = cached_by_key.get((rec["page_no"], tuple(rec["box"])))
-            if hit is not None and (hit.get("description") or hit.get("error")):
+            if hit is not None and hit.get("description"):
                 rec["description"] = hit.get("description")
-                if hit.get("error"):
-                    rec["error"] = hit["error"]
                 if hit.get("crop"):
                     rec["crop"] = hit["crop"]
-                if rec.get("description"):
-                    stats["described"] += 1
-                else:
-                    stats["failed"] += 1
+                stats["described"] += 1
                 continue
 
             # 裁图（视觉输入）
@@ -469,28 +477,60 @@ def process_book_figures(llm: LLM, book_dir: Path, state_dir: Path,
 
     # ---------- 2) 批量视觉 ----------
     if describe and pending:
-        for i in range(0, len(pending), batch_size):
-            chunk = pending[i:i + batch_size]
-            stats["batches"] += 1
+        # 并行前先串行探一次原生路径 —— 多个 worker 同时去试那个会挂起的
+        # 请求，只会让整批一起卡住（CLAUDE.md 硬约束）。
+        if workers > 1:
+            llm.warmup()
+
+        lock = threading.Lock()
+        save_lock = threading.Lock()
+
+        def save_progress() -> None:
+            """增量落盘 —— 每批识别完就写一次，中途被掐不丢已完成的部分。"""
+            with save_lock:
+                tmp = out_dir / f"figures.json.tmp.{os.getpid()}.{threading.get_ident()}"
+                tmp.write_text(json.dumps(all_figs, ensure_ascii=False, indent=2), "utf-8")
+                tmp.replace(out_dir / "figures.json")
+
+        def run_chunk(chunk: list[dict]) -> None:
+            """一批（默认 6 张）：批量视觉失败 → 逐张重试（更稳）。"""
+            with lock:
+                stats["batches"] += 1
             try:
-                descs = describe_figures_batch(llm, chunk, model=model)
+                # ⚠️ rec["crop"] 存的是**相对 book_dir 的路径**（JSON 里要好看），
+                #    但读文件必须用绝对路径 —— 否则相对的是**进程 cwd**，
+                #    在别处跑 CLI 时每批都会 FileNotFoundError → 静默退化成单图调用。
+                batch_items = [{**r, "crop": str(book_dir / r["crop"])} for r in chunk]
+                descs = describe_figures_batch(llm, batch_items, model=model)
             except Exception:
-                # 批次失败 → 逐张重试（更稳）
                 for rec in chunk:
                     try:
                         d = describe_figure(llm, Path(book_dir / rec["crop"]),
                                             rec["caption"], rec["source"], model=model)
                         rec["description"] = d.model_dump()
-                        stats["described"] += 1
+                        with lock:
+                            stats["described"] += 1
                     except Exception as e2:
                         rec["error"] = str(e2)[:200]
-                        stats["failed"] += 1
-                continue
+                        with lock:
+                            stats["failed"] += 1
+                save_progress()
+                return
             for rec, d in zip(chunk, descs, strict=False):
                 rec["description"] = d
-                stats["described"] += 1
+            with lock:
+                stats["described"] += sum(1 for r in chunk if r.get("description"))
+            save_progress()
             if on_progress:
                 on_progress(chunk[-1], stats)
+
+        chunks = [pending[i:i + batch_size] for i in range(0, len(pending), batch_size)]
+        if workers <= 1:
+            for chunk in chunks:
+                run_chunk(chunk)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(run_chunk, chunks))
 
     (out_dir / "figures.json").write_text(
         json.dumps(all_figs, ensure_ascii=False, indent=2), "utf-8")
