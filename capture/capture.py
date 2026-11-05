@@ -240,7 +240,27 @@ async def wait_stable(page, polls: int = 3, timeout_ms: int = 25000) -> bool:
 
 
 async def flip_next(page) -> bool:
-    """点「下一页」。⚠️ .renderTarget_pager_content_right 是外层 DIV，点它无效。"""
+    """点「下一页」。⚠️ .renderTarget_pager_content_right 是外层 DIV，点它无效。
+
+    ⚠️ **必须用真实指针点击**，不能只用 JS 的 b.click()。
+    章末（章节交界处）阅读器把「翻到下一章」挂在真实指针事件上：
+    JS 派发的 click 点了没反应 → canvas 内容恒定 → 被判成「翻页失效」→
+    采集在每一章末尾静默停住（实测《React Native移动开发实战》第3/5/7 章末各停一次，
+    每次都得靠 --start-at 跳章续采，中间夹着的「习题」节被整段跳过 → 内容缺失）。
+
+    实测对照（同一页，章末）：
+        JS 点击    → 内容变化: False
+        真实点击   → 内容变化: True（直接跳到下一章）
+
+    所以顺序是：先真实点击（Playwright locator.click）→ 再退到 JS 点击兜底。
+    """
+    try:
+        loc = page.locator(".renderTarget_pager_button_right")
+        if await loc.count() > 0:
+            await loc.first.click(timeout=8000, force=True)
+            return True
+    except Exception:
+        pass  # 按钮被遮挡/不可见 → 退到 JS 兜底
     return bool(await _eval_safe(page, """() => {
       const b = document.querySelector('.renderTarget_pager_button_right')
              || [...document.querySelectorAll('.renderTarget_pager_button')].pop();
@@ -749,7 +769,21 @@ async def run(args) -> int:
             title = await _eval_safe(page, JS_CHAPTER, None)
             if title and title != current_chapter:
                 current_chapter = title
-                idx = next((i for i, t in enumerate(toc) if t["title"] == title), -1)
+                # ⚠️ 目录里可能有**同名条目**（实测《React Native移动开发实战》8 个章末
+                # 都叫「习题」）。原来取「首次匹配」→ 每一章的习题页都记成第 1 章那个
+                # 习题（index 23）→ 习题页被归到错误的一级章目录、pages.jsonl 的
+                # chapter_index 全错 → 下游切分把习题节定位到错误的章节。
+                # 正确做法：**单调前进匹配** —— 页面顺序单调，章节号只会往后走，
+                # 所以从当前位置往后找第一个同名条目。
+                idx = -1
+                for i, t in enumerate(toc):
+                    if t["title"] != title:
+                        continue
+                    if t["index"] > current_index:
+                        idx = i
+                        break
+                    if idx < 0:
+                        idx = i  # 退而求其次：没有往后出现的同名项就用当前这个
                 if idx >= 0:
                     current_index = toc[idx]["index"]
 
