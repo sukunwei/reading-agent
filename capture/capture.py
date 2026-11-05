@@ -222,7 +222,12 @@ async def wait_stable(page, polls: int = 3, timeout_ms: int = 25000) -> bool:
     """等 canvas 内容指纹连续 N 次不变（正文与插图都渲染完、过渡帧结束）。"""
     last, same, waited = None, 0, 0
     while waited < timeout_ms:
-        sig = await page.evaluate(JS_CONTENT_SIG)
+        sig = await _eval_safe(page, JS_CONTENT_SIG, None)
+        if sig is None:
+            # 页面正在刷新（点重试会整页 reload），上下文被销毁 → 重新开始这一轮
+            last, same = None, 0
+            await page.wait_for_timeout(1000)
+            continue
         if sig == last:
             same += 1
             if same >= polls:
@@ -236,12 +241,12 @@ async def wait_stable(page, polls: int = 3, timeout_ms: int = 25000) -> bool:
 
 async def flip_next(page) -> bool:
     """点「下一页」。⚠️ .renderTarget_pager_content_right 是外层 DIV，点它无效。"""
-    return await page.evaluate("""() => {
+    return bool(await _eval_safe(page, """() => {
       const b = document.querySelector('.renderTarget_pager_button_right')
              || [...document.querySelectorAll('.renderTarget_pager_button')].pop();
       if (b) { b.click(); return true; }
       return false;
-    }""")
+    }""", False))
 
 
 async def open_catalog(page) -> bool:
@@ -328,25 +333,39 @@ async def read_chapter_title(page) -> str | None:
     }""")
 
 
+async def _eval_safe(page, js: str, default=None):
+    """page.evaluate 的容错版。
+
+    ⚠️ 点「点击重试」会让阅读器整页刷新 → 正在执行的 JS 上下文被销毁 →
+    `page.evaluate` 直接抛 "Execution context was destroyed"，整个采集进程崩掉
+    （实测在《Flutter App开发》第 178 页崩掉，白跑 5 分钟）。
+    这里把这类异常吞掉并返回默认值，让调用方按「还没恢复」处理即可。
+    """
+    try:
+        return await page.evaluate(js)
+    except Exception:
+        return default
+
+
 async def recover_load_error(page, attempts: int = 4, wait_ms: int = 12000) -> bool:
     """整屏渲染失败（页面显示「加载失败，请 点击重试」）时点重试恢复。
 
     返回 True 表示已恢复（页面可正常截图）；False 表示多次重试仍失败。
     """
     for attempt in range(1, attempts + 1):
-        if not await page.evaluate(JS_LOAD_ERROR):
+        if not await _eval_safe(page, JS_LOAD_ERROR, False):
             return True
-        clicked = await page.evaluate(JS_CLICK_RETRY)
+        clicked = await _eval_safe(page, JS_CLICK_RETRY, False)
         if not clicked:
             # 没有重试按钮：等一会儿看阅读器是否自愈
             await page.wait_for_timeout(3000)
             continue
         print(f"  ♻️ 渲染失败页「第 {attempt} 次」点「点击重试」…")
         await page.wait_for_timeout(wait_ms)
-        if not await page.evaluate(JS_LOAD_ERROR):
+        if not await _eval_safe(page, JS_LOAD_ERROR, False):
             print("  ♻️ 已恢复渲染 ✅")
             return True
-    return not await page.evaluate(JS_LOAD_ERROR)
+    return not await _eval_safe(page, JS_LOAD_ERROR, False)
 
 
 async def dump_stuck_state(page, state_dir) -> None:
@@ -460,7 +479,16 @@ async def run(args) -> int:
                                         storage_state=json.loads(state_path.read_text("utf-8")))
         page = await ctx.new_page()
 
-        await page.goto(book_url, wait_until="domcontentloaded", timeout=60000)
+        # ⚠️ 60s 超时偶尔不够：微信读书首屏要拉一堆 chunk + 图片，
+        # 冷启动时 domcontentloaded 可能迟迟不触发 → 直接 TimeoutError 退出。
+        # 这里放宽到 180s，并在超时后重试一次（换 wait_until=commit 先把控制权拿回来）。
+        try:
+            await page.goto(book_url, wait_until="domcontentloaded", timeout=180000)
+        except Exception as e:
+            print(f"  ⚠️ 首次导航超时（{type(e).__name__}），重试一次…")
+            with contextlib.suppress(Exception):
+                await page.goto(book_url, wait_until="commit", timeout=120000)
+            await page.wait_for_timeout(8000)
         await page.wait_for_timeout(6000)
         for sel in (".wr_dialog_closeButton", ".wr_dialog_mask"):
             with contextlib.suppress(Exception):
@@ -624,14 +652,14 @@ async def run(args) -> int:
         hard_recoveries = 0
 
         while captured < args.max_pages:
-            bad = await page.evaluate(JS_READY)
+            bad = await _eval_safe(page, JS_READY, [])
             if bad:
                 print(f"  ⚠️ reader 未就绪: {', '.join(bad)}")
             await wait_stable(page)
 
             # 整屏渲染失败要先恢复，否则会截到一张空白错误页，
             # 而且 canvas 内容恒定 → 被判成「连续内容不变」→ 误当成书尾停下。
-            if await page.evaluate(JS_LOAD_ERROR):
+            if await _eval_safe(page, JS_LOAD_ERROR, False):
                 # ⚠️ recover_load_error 报「已恢复」只代表错误文字暂时消失；
                 # 若 chunk 本身加载不了（服务端报错），点完「点击重试」错误立刻复现
                 # → 无限循环：既不截图也不前进（实测卡在中途 16 分钟不动）。
@@ -656,15 +684,20 @@ async def run(args) -> int:
                 await wait_stable(page)
                 prev_sig = None
                 continue
-            load_err_streak = 0
+            # ⚠️ 这里**不能**把 load_err_streak 清零。
+            # 坏 chunk 的典型表现是「加载失败 → 点重试 → 错误文字消失 → 又失败」，
+            # 每次循环开头错误都是「暂时消失」的，若在这里清零，连续失败计数永远到不了 3，
+            # 硬恢复分支根本不触发 → 永远在同一个坏 chunk 上打转、页数不涨
+            # （实测《Flutter App开发》卡在 561 页反复空转 15 分钟）。
+            # 正确做法：只在**真的采到新页**时才清零（见下方截图成功分支）。
 
-            geo = await page.evaluate(JS_GEOMETRY)
-            if not geo["canvases"]:
+            geo = await _eval_safe(page, JS_GEOMETRY, None)
+            if not geo or not geo.get("canvases"):
                 print("  ✗ 没有 canvas，停止")
                 break
 
-            sig = await page.evaluate(JS_CONTENT_SIG)
-            if prev_sig and sig == prev_sig:
+            sig = await _eval_safe(page, JS_CONTENT_SIG, None)
+            if prev_sig and sig is not None and sig == prev_sig:
                 # 内容没变有三种可能：① 到书尾了 ② 阅读器还在加载下一屏（chunk 慢）
                 # ③ 翻页真的失效。
                 # ⚠️ 实测 ② 要 20~40 秒才出结果：原来的「等 6 秒 + 4 次重试（≈30 秒）」
@@ -675,9 +708,14 @@ async def run(args) -> int:
                 recovered = False
                 for wait_s in (10, 20, 30, 45):
                     await page.wait_for_timeout(wait_s * 1000)
-                    sig2 = await page.evaluate(JS_CONTENT_SIG)
-                    if sig2 != prev_sig:
-                        prev_sig = sig2
+                    sig2 = await _eval_safe(page, JS_CONTENT_SIG, None)
+                    if sig2 is not None and sig2 != prev_sig:
+                        # ⚠️ 这里绝不能更新 prev_sig：循环顶部是 `if prev_sig and sig == prev_sig`
+                        # 才进入等待分支，一旦把 prev_sig 改成当前内容，continue 回去就又满足
+                        # 「sig == prev_sig」，重新进入等待分支 —— 于是永远走不到下面的截图逻辑，
+                        # 表现是「日志一直刷『等待 Ns 后内容继续更新』但页数不涨」（实测《Flutter
+                        # App开发》卡在 228 页）。正确做法是直接落到截图：内容已经变了，
+                        # 让本轮继续往下走，重新取一次 sig 再截图。
                         stuck = 0
                         recovered = True
                         print(f"  ↻ 等待 {wait_s}s 后内容继续更新（chunk 加载慢，非失效）")
@@ -686,12 +724,12 @@ async def run(args) -> int:
                 if recovered:
                     continue
                 # 「下一页」按钮消失 = 真的到书尾了；按钮还在但内容不变 = 翻页失效。
-                has_next = await page.evaluate("""() => {
+                has_next = await _eval_safe(page, """() => {
                   const b = document.querySelector('.renderTarget_pager_button_right');
                   if (!b) return false;
                   const r = b.getBoundingClientRect();
                   return r.width > 0 && r.height > 0;
-                }""")
+                }""", False)
                 if not has_next:
                     print("  ⛔ 已到书尾（下一页按钮消失），停止")
                     break
@@ -708,7 +746,7 @@ async def run(args) -> int:
             prev_sig = sig
             screen_idx += 1
 
-            title = await page.evaluate(JS_CHAPTER)
+            title = await _eval_safe(page, JS_CHAPTER, None)
             if title and title != current_chapter:
                 current_chapter = title
                 idx = next((i for i, t in enumerate(toc) if t["title"] == title), -1)
@@ -753,6 +791,7 @@ async def run(args) -> int:
                 })
                 page_no = no
                 captured += 1
+                load_err_streak = 0  # 真的采到新页了，才算从坏 chunk 里走出来
                 if captured % 20 == 0 or captured <= 3:
                     print(f"  📄 {no:4d}  {(title or '')[:28]:30s} {Path(rel_img).name}")
 
