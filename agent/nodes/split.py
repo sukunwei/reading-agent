@@ -76,6 +76,9 @@ def _match_heading_line(title: str, lines: list[str],
     """
     m = NUM_HEAD.match(title)
     if not m:
+        # 一级章（「第9章 资源和图片」）没有数字前缀 → 走独立整行匹配
+        if L1_HEAD.match(title):
+            return _match_l1_heading_line(title, lines)
         return None
     num, rest = m.group(1), m.group(2)
     if not rest.strip():
@@ -98,6 +101,40 @@ def find_section_page(title: str, ocr_texts: dict[int, str],
             continue
         lines = ocr_texts[no].splitlines()
         if _match_heading_line(title, lines, min_ratio) is not None:
+            return no
+    return None
+
+
+# 一级章标题形如「第9章 资源和图片」（没有「数字.数字」前缀）
+L1_HEAD = re.compile(r"^第\s*\d+\s*章")
+
+
+def _match_l1_heading_line(title: str, lines: list[str]) -> int | None:
+    """在一页的行里找一级章标题行，返回行号（找不到 None）。
+
+    ⚠️ 必须要求「归一化后以标题开头、且只多出极少字符」：
+    书前的「各章摘要」里会出现「第9章介绍如何加载、处理、展示资源和图片，如…」这种行，
+    只做包含匹配会命中摘要页（页码更靠前）→ 边界直接错到书前。
+    真标题是独立整行（第9章 资源和图片）→ 多余字符 ≤ 4。
+    """
+    t = _norm_heading(title)
+    if not t:
+        return None
+    for i, line in enumerate(lines):
+        l = _norm_heading(line)
+        if l.startswith(t) and len(l) - len(t) <= 4:
+            return i
+    return None
+
+
+def find_l1_section_page(title: str, ocr_texts: dict[int, str],
+                         min_page: int = 1) -> int | None:
+    """在 OCR 文本里定位一级章标题（「第N章 …」）所在页。"""
+    for no in sorted(ocr_texts):
+        if no < min_page:
+            continue
+        lines = ocr_texts[no].splitlines()
+        if _match_l1_heading_line(title, lines) is not None:
             return no
     return None
 
@@ -131,49 +168,78 @@ def build_chapters(toc: list[dict], pages: list[dict],
         if ci not in start_of:
             start_of[ci] = p.get("page_no", 0)
 
-    # ── 没有真实起始页的目录项 → 在 OCR 文本里定位小节标题 ──
-    # 找不到标题的（扉页、文后这类没有编号的条目）→ 继承上一项的起点。
+    # ── 没有真实起始页的目录项 → 在 OCR 文本里定位标题 ──
+    # 三级小节按「数字.数字」定位；一级章（第N章 …）没有数字前缀，
+    #   但它在正文里是**独立整行**的标题 → 单独定位（见 find_l1_section_page）。
+    # ⚠️ 一级章如果定位不到就「继承上一项的起点」，会把上一节的尾页吞掉
+    #   （实测《Flutter技术入门与实战》：9.2 自定义字体只剩 1 页、8.2 少 2 页）。
     ocr_texts = ocr_texts or {}
-    located = 0
+    located = located_l1 = 0
     for item in toc:
         if item["index"] in start_of:
             continue
-        no = find_section_page(item["title"], ocr_texts)
+        is_l1 = bool(L1_HEAD.match(item["title"]))
+        no = (find_l1_section_page(item["title"], ocr_texts) if is_l1
+              else find_section_page(item["title"], ocr_texts))
         if no is not None:
             start_of[item["index"]] = no
             located += 1
+            if is_l1:
+                located_l1 += 1
     if located:
-        print(f"  📑 小节标题定位：{located} 个目录项从 OCR 找回真实起始页")
+        print(f"  📑 小节标题定位：{located} 个目录项从 OCR 找回真实起始页"
+              f"（其中一级章 {located_l1} 个）")
 
-    # 目录里没有起始页的项（可能是空章节）→ 继承上一项的起点
-    last_start = min(start_of.values()) if start_of else 1
-    for item in toc:
-        if item["index"] not in start_of:
-            start_of[item["index"]] = last_start
-        else:
-            last_start = start_of[item["index"]]
+    max_page = max((p.get("page_no", 0) for p in pages), default=1)
 
-    # 结束页 = 下一项的起始页 - 1
+    # 仍然没有起始页的目录项（扉页这类「本来就没有独立页面」的条目）
+    #   → 记为空章，**不继承上一项起点**（继承会让后面的章整体错位一页）。
+    def next_start_after(i: int) -> int | None:
+        """TOC 顺序里，位置 i 之后第一个有真实起始页的目录项的起始页。"""
+        for it in toc[i + 1:]:
+            if it["index"] in start_of:
+                return start_of[it["index"]]
+        return None
+
+    # 结束页 = 下一个**有内容**的目录项的起始页 - 1
     chapters = []
     for i, item in enumerate(toc):
-        start = start_of.get(item["index"], 1)
-        nxt = start_of.get(toc[i + 1]["index"]) if i + 1 < len(toc) else None
-        end = (nxt - 1) if nxt else max((p.get("page_no", 0) for p in pages), default=start)
+        idx = item["index"]
+        nxt = next_start_after(i)
+        if idx in start_of:
+            start = start_of[idx]
+            end = (nxt - 1) if nxt else max_page
+            empty = False
+        else:
+            # 空章：start 取下一个有内容章节的起点，end = start - 1 → 区间为空
+            start = nxt if nxt else max_page + 1
+            end = start - 1
+            empty = True
         chapters.append({
-            "index": item["index"],
+            "index": idx,
             "level": item.get("level", 1),
             "title": item["title"],
             "start_page": start,
-            "end_page": max(start, end),
+            "end_page": max(start, end) if not empty else end,
+            "empty": empty,
         })
 
-    # 校正：起始页必须严格递增
-    for i in range(1, len(chapters)):
-        if chapters[i]["start_page"] <= chapters[i - 1]["start_page"]:
-            chapters[i]["start_page"] = chapters[i - 1]["start_page"] + 1
+    # 校正：起始页必须严格递增（空章除外 —— 它们不占页）
+    prev = None
+    for ch in chapters:
+        if ch["empty"]:
+            continue
+        if prev is not None and ch["start_page"] <= prev:
+            ch["start_page"] = prev + 1
+        prev = ch["start_page"]
     for i in range(len(chapters) - 1):
+        if chapters[i]["empty"]:
+            continue
+        nxt_ch = chapters[i + 1]
         chapters[i]["end_page"] = max(chapters[i]["start_page"],
-                                      chapters[i + 1]["start_page"] - 1)
+                                      nxt_ch["start_page"] - 1)
+    if chapters and not chapters[-1]["empty"]:
+        chapters[-1]["end_page"] = max(chapters[-1]["start_page"], max_page)
     return chapters
 
 
