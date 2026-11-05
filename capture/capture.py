@@ -349,6 +349,90 @@ async def recover_load_error(page, attempts: int = 4, wait_ms: int = 12000) -> b
     return not await page.evaluate(JS_LOAD_ERROR)
 
 
+async def dump_stuck_state(page, state_dir) -> None:
+    """卡住时留现场：截图 + 可见文本 + 关键 DOM 状态。
+
+    用来区分三种「不前进」：① 真的到书尾 ② 翻页按钮失效 ③ 页面在报加载失败。
+    """
+    with contextlib.suppress(Exception):
+        dbg = Path(state_dir) / "stuck_debug"
+        dbg.mkdir(parents=True, exist_ok=True)
+        try:
+            await page.screenshot(path=str(dbg / "stuck.png"), timeout=20000)
+        except Exception:
+            pass
+        info = await page.evaluate("""() => {
+          const b = document.querySelector('.renderTarget_pager_button_right');
+          const r = b ? b.getBoundingClientRect() : null;
+          const t = document.querySelector('.renderTargetPageInfo_header_chapterTitle');
+          return {
+            chapter: t ? (t.innerText || '').trim() : null,
+            canvases: document.querySelectorAll('canvas').length,
+            nextBtn: r ? {w: r.width, h: r.height} : null,
+            loadError: (document.body.innerText || '').includes('加载失败'),
+            text: (document.body.innerText || '').slice(0, 1200),
+          };
+        }""")
+        (dbg / "stuck.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), "utf-8")
+        print(f"  🔍 卡住现场 → {dbg}")
+
+
+async def hard_recover(page, chapter_title: str | None) -> bool:
+    """渲染失败反复出现时的硬恢复：整页重载 + 重新定位到当前章节。
+
+    ⚠️ 必须走「重载」而不是单纯跳目录：跳目录需要目录面板可见，
+    而主循环里目录面板被 CSS 隐藏了（display:none !important）→ 点不到。
+    重载会连带清掉 add_style_tag 注入的隐藏样式，重新走一遍初始化即可。
+    """
+    print(f"  ♻️ 硬恢复：重载阅读器并跳回「{chapter_title}」…")
+    try:
+        await page.reload(wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        print(f"    重载失败: {e}")
+        return False
+    await page.wait_for_timeout(6000)
+    with contextlib.suppress(Exception):
+        await page.wait_for_function('document.querySelectorAll("canvas").length > 0', timeout=25000)
+    await page.wait_for_timeout(2500)
+
+    # 视口高度 = 输出高 + header 高（与首次初始化保持一致，否则分页会错位）
+    hb0 = await page.evaluate("""() => {
+      const e = document.querySelector('.readerTopBar');
+      if (!e) return 0;
+      return Math.round(e.getBoundingClientRect().bottom);
+    }""")
+    if hb0 > 0:
+        await page.set_viewport_size({"width": VIEWPORT["width"], "height": OUTPUT_H + hb0})
+        await page.wait_for_timeout(1500)
+
+    mode = await ensure_reading_mode(page)
+    if not mode.get("horizontal"):
+        print("    ❌ 重载后没能切到「上下滚动双栏」")
+        return False
+
+    if chapter_title:
+        landed = False
+        for _ in range(3):
+            if await jump_to_toc(page, chapter_title):
+                await page.wait_for_timeout(1500)
+                now = await read_chapter_title(page)
+                if now and (now == chapter_title or now.startswith(chapter_title)
+                            or chapter_title.startswith(now)):
+                    landed = True
+                    break
+            await page.wait_for_timeout(2000)
+        if not landed:
+            print(f"    ❌ 没能跳回章节「{chapter_title}」")
+            return False
+
+    await page.add_style_tag(content="""
+        .readerCatalog, .readerCatalog_list, .wr_mask { display: none !important; }
+    """)
+    await page.wait_for_timeout(800)
+    print("    ♻️ 硬恢复完成 ✅")
+    return True
+
+
 # --------------------------------------------------------------------------- 主流程
 
 async def run(args) -> int:
@@ -431,6 +515,18 @@ async def run(args) -> int:
         # ⚠️ 必须在目录面板「真实打开」时用真实点击跳转（见 jump_to_toc）。
         start_title = args.start_at or (toc[0]["title"] if toc else None)
         if start_title:
+            # ⚠️ 阅读器会恢复「上次读到哪」。如果恢复的位置**就在目标章节内**，
+            # 再点该章节的目录项是空操作 → 采集会从章节末尾而不是开头开始
+            # （实测：目标 16.2、恢复到 16.2 末尾 → 一页没采到就判「翻页失效」）。
+            # 所以先跳到目录首项（必然是一次真实跳转），再跳到目标章节。
+            here = await read_chapter_title(page)
+            if here and start_title and here == start_title and len(toc) > 1:
+                first_title = toc[0]["title"]
+                print(f"  ↪ 先跳到首项「{first_title}」制造一次真实跳转（当前已在「{here}」内）")
+                for _ in range(2):
+                    if await jump_to_toc(page, first_title):
+                        await page.wait_for_timeout(2500)
+                        break
             landed = False
             for attempt in range(3):
                 jumped = await jump_to_toc(page, start_title)
@@ -524,6 +620,8 @@ async def run(args) -> int:
         screen_idx = 0
         stuck = 0
         prev_sig = None
+        load_err_streak = 0
+        hard_recoveries = 0
 
         while captured < args.max_pages:
             bad = await page.evaluate(JS_READY)
@@ -534,12 +632,31 @@ async def run(args) -> int:
             # 整屏渲染失败要先恢复，否则会截到一张空白错误页，
             # 而且 canvas 内容恒定 → 被判成「连续内容不变」→ 误当成书尾停下。
             if await page.evaluate(JS_LOAD_ERROR):
-                if not await recover_load_error(page):
-                    print("  ⛔ 渲染失败且重试无效，停止")
+                # ⚠️ recover_load_error 报「已恢复」只代表错误文字暂时消失；
+                # 若 chunk 本身加载不了（服务端报错），点完「点击重试」错误立刻复现
+                # → 无限循环：既不截图也不前进（实测卡在中途 16 分钟不动）。
+                # 所以要计连续次数：超过阈值就整页重载硬恢复，恢复不了才停。
+                load_err_streak += 1
+                if load_err_streak <= 3:
+                    if not await recover_load_error(page):
+                        print("  ⛔ 渲染失败且重试无效，停止")
+                        break
+                    await wait_stable(page)
+                    prev_sig = None  # 恢复后内容变了，重新判定
+                    continue
+                print(f"  ♻️ 渲染失败连续 {load_err_streak} 次，尝试硬恢复（重载 + 跳回当前章节）…")
+                hard_recoveries += 1
+                if hard_recoveries > 2:
+                    print("  ⛔ 硬恢复次数用尽，停止")
                     break
+                if not await hard_recover(page, current_chapter):
+                    print("  ⛔ 硬恢复失败，停止")
+                    break
+                load_err_streak = 0
                 await wait_stable(page)
-                prev_sig = None  # 恢复后内容变了，重新判定
+                prev_sig = None
                 continue
+            load_err_streak = 0
 
             geo = await page.evaluate(JS_GEOMETRY)
             if not geo["canvases"]:
@@ -548,13 +665,25 @@ async def run(args) -> int:
 
             sig = await page.evaluate(JS_CONTENT_SIG)
             if prev_sig and sig == prev_sig:
-                # 内容没变有两种可能：① 到书尾了 ② 阅读器还在加载下一屏。
-                # ②更常见（翻页比渲染快），所以先多等一会儿再判定，别急着当书尾。
-                await page.wait_for_timeout(6000)
-                sig2 = await page.evaluate(JS_CONTENT_SIG)
-                if sig2 != prev_sig:
-                    prev_sig = sig2
-                    stuck = 0
+                # 内容没变有三种可能：① 到书尾了 ② 阅读器还在加载下一屏（chunk 慢）
+                # ③ 翻页真的失效。
+                # ⚠️ 实测 ② 要 20~40 秒才出结果：原来的「等 6 秒 + 4 次重试（≈30 秒）」
+                # 太急，会把「还在加载」误判成「翻页失效」而中途停采
+                # （实测《Flutter技术入门与实战》第 16 章因此停在 611 页不动）。
+                # 这里改成渐进等待：10s → 20s → 30s → 45s，累计约 105 秒，
+                # 每次等待之间重新点一次翻页，逼它重新发起 chunk 请求。
+                recovered = False
+                for wait_s in (10, 20, 30, 45):
+                    await page.wait_for_timeout(wait_s * 1000)
+                    sig2 = await page.evaluate(JS_CONTENT_SIG)
+                    if sig2 != prev_sig:
+                        prev_sig = sig2
+                        stuck = 0
+                        recovered = True
+                        print(f"  ↻ 等待 {wait_s}s 后内容继续更新（chunk 加载慢，非失效）")
+                        break
+                    await flip_next(page)
+                if recovered:
                     continue
                 # 「下一页」按钮消失 = 真的到书尾了；按钮还在但内容不变 = 翻页失效。
                 has_next = await page.evaluate("""() => {
@@ -569,6 +698,7 @@ async def run(args) -> int:
                 stuck += 1
                 if stuck >= args.max_stuck:
                     print("  ⛔ 连续内容不变（书尾或翻页失效），停止")
+                    await dump_stuck_state(page, state_dir)
                     break
                 await page.wait_for_timeout(800)
                 if not await flip_next(page):
