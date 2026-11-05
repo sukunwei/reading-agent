@@ -294,6 +294,10 @@ class LLM:
         （实测原生路径在该端点会挂起数分钟）。先串行探一次，
         失败就把 `_native_disabled` 置上，后面所有 worker 直接走提示词模式。
         返回 True = 原生可用。
+
+        ⚠️ 探测必须**限时且不重试**：
+        客户端默认超时 = `API_TIMEOUT_MS`（全局 3000000ms = 50 分钟），
+        原生路径又重试 4 次 → 一次挂起能把整个 worker 拖死几小时。
         """
         if self.structured_mode != "auto":
             return self.structured_mode == "native"
@@ -302,20 +306,30 @@ class LLM:
         try:
             class _Probe(BaseModel):
                 ok: bool
-            self._structured_native("只输出 JSON", '返回 {"ok": true}', _Probe, max_tokens=64)
+            self._structured_native(
+                "只输出 JSON", '返回 {"ok": true}', _Probe, max_tokens=64,
+                timeout=float(os.environ.get("LLM_NATIVE_PROBE_TIMEOUT", "60")),
+                attempts=1)
             return True
         except Exception:
             self._native_disabled = True
             return False
 
     def _structured_native(self, system: str, user: str, schema: type[T],
-                          model: str | None, max_tokens: int,
-                          effort: str | None) -> T:
+                          model: str | None = None, max_tokens: int = 16000,
+                          effort: str | None = None,
+                          timeout: float | None = None,
+                          attempts: int = 4) -> T:
         model = model or self.model
         effort = effort or self.effort
+        # ⚠️ 原生路径在部分 Anthropic 兼容端点会**挂起**（既不返回也不报错）。
+        #    客户端默认超时 = API_TIMEOUT_MS（全局 3000000ms = 50 分钟），
+        #    再叠 4 次重试 → 一次挂起能把 worker 拖死几十分钟，这里单独限死。
+        if timeout is None:
+            timeout = float(os.environ.get("LLM_NATIVE_TIMEOUT", "180"))
         last_exc: Exception | None = None
 
-        for attempt in range(4):
+        for attempt in range(attempts):
             try:
                 with self.client.messages.stream(
                     model=model,
@@ -325,6 +339,7 @@ class LLM:
                     output_config={"effort": effort},
                     output_format=schema,
                     messages=[{"role": "user", "content": user}],
+                    timeout=timeout,
                 ) as stream:
                     msg = stream.get_final_message()
                 self._record(msg.usage)
@@ -346,7 +361,7 @@ class LLM:
                 return parsed
             except Exception as e:
                 last_exc = e
-                if not self._is_retryable(e) or attempt == 3:
+                if not self._is_retryable(e) or attempt == attempts - 1:
                     break
                 time.sleep(min(30, 2 ** attempt * 3))
 
