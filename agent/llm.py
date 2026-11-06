@@ -384,6 +384,13 @@ class LLM:
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         last_err = ""
+        # ⚠️ 提示词模式**也要单独限超时**。
+        # 客户端默认超时 = API_TIMEOUT_MS（全局 3000000ms = 50 分钟），
+        # 而这个端点偶尔会**挂起**（既不返回也不报错）→ 一次挂起把串行总结
+        # 拖死 50 分钟，整个流水线看起来像卡死（实测《React Native移动开发实战》
+        # 逐章总结卡在第 4 章 47 分钟无任何输出）。
+        # 原生路径已有 LLM_NATIVE_TIMEOUT=180，这里给提示词路径补一个同量级的。
+        timeout = float(os.environ.get("LLM_PROMPT_TIMEOUT", "180"))
         for attempt in range(3):
             try:
                 with self.client.messages.stream(
@@ -393,6 +400,7 @@ class LLM:
                     thinking={"type": "adaptive"},
                     output_config={"effort": effort},
                     messages=messages,
+                    timeout=timeout,
                 ) as stream:
                     msg = stream.get_final_message()
                 self._record(msg.usage)
@@ -429,6 +437,9 @@ class LLM:
         model = model or self.model
         effort = effort or self.effort
         last_exc: Exception | None = None
+        # ⚠️ 同 _structured_prompt：必须单独限超时，否则一次挂起 =
+        #    4 次重试 × 50 分钟 = 200 分钟的静默停顿。
+        timeout = float(os.environ.get("LLM_PROMPT_TIMEOUT", "180"))
 
         for attempt in range(4):
             try:
@@ -439,6 +450,7 @@ class LLM:
                     thinking={"type": "adaptive"},
                     output_config={"effort": effort},
                     messages=[{"role": "user", "content": user}],
+                    timeout=timeout,
                 ) as stream:
                     msg = stream.get_final_message()
                 self._record(msg.usage)
