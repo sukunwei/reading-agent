@@ -88,6 +88,7 @@ python3 agent/report.py --book <书名> --out-dir "$OUT_DIR"   # HTML 报告（�
 | 解析模型输出用 **`raw_decode()`** | 模型偶尔输出「示例 JSON + 正式 JSON」两段，`find('{')..rfind('}')` 会报 "Extra data" |
 | 原生路径返回 **dict** 时要转成 schema 实例 | 实测该端点偶发返回原始 dict → `'dict' object has no attribute 'model_dump'`。`_structured_native` **和 `structured_vision` 的原生分支**都要转（后者曾漏掉 → 视觉识别全军覆没） |
 | **视觉调用要单独限超时** | 客户端默认超时 = `API_TIMEOUT_MS`（全局 3000000ms = 50 分钟）→ 一次挂起能把 worker 卡死 50 分钟。视觉批次单独给 300s（`LLM_VISION_TIMEOUT`） |
+| **提示词模式的结构化输出也要单独限超时** | 客户端默认超时 = `API_TIMEOUT_MS`（50 分钟），而端点偶尔**挂起**（既不返回也不报错）→ 一次挂起把串行逐章总结拖死 50 分钟，流水线看起来像卡死（实测《React Native移动开发实战》逐章总结卡在第 4 章 47 分钟无输出）。原生路径已有 `LLM_NATIVE_TIMEOUT=180`，提示词路径补 `LLM_PROMPT_TIMEOUT=180`；`text()` 同样要限（它有 4 次重试，不限就是 200 分钟） |
 | **提示词模式的失败重试不写台账** | `_record` 只在拿到响应后调用 → schema 校验失败的重试**在 usage.jsonl 里完全看不见**。台账「没动静」不等于「没在跑」 |
 
 ### 3.4 插图层
